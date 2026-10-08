@@ -4,6 +4,11 @@ use gtk::Application;
 use gtk::prelude::*;
 
 fn main() {
+    if let Err(error) = gstreamer::init() {
+        eprintln!("Could not initialize GStreamer: {error}");
+        return;
+    }
+
     let app = Application::builder()
         .application_id("com.zvirox.ProjectSaturn")
         .build();

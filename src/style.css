@@ -16,6 +16,32 @@ window {
   border-bottom: 1px solid #292a33;
 }
 
+.menu-bar {
+  margin-right: 8px;
+}
+
+.menu-button {
+  background: transparent;
+  border-color: transparent;
+  border-radius: 5px;
+  color: #c9cad2;
+  padding: 6px 7px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.menu-button:hover,
+.menu-button:checked {
+  background: #292a33;
+  color: #ffffff;
+}
+
+.about-title {
+  color: #f0f0f4;
+  font-size: 18px;
+  font-weight: 700;
+}
+
 .brand-mark,
 .preview-mark {
   color: #ff765e;
@@ -106,6 +132,42 @@ window {
   color: #c5c6cf;
   font-size: 12px;
   font-weight: 600;
+}
+
+.media-list {
+  background: transparent;
+}
+
+.media-row {
+  background: transparent;
+  border-radius: 7px;
+  margin: 2px 0;
+}
+
+.media-row:selected {
+  background: #30252a;
+}
+
+.media-glyph {
+  color: #ff957f;
+  font-size: 20px;
+}
+
+.media-name,
+.inspector-media-title {
+  color: #e4e4eb;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.inspector-key {
+  color: #9395a1;
+  font-size: 10px;
+}
+
+.inspector-value {
+  color: #dedee5;
+  font-size: 11px;
 }
 
 button {

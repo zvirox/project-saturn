@@ -1,23 +1,40 @@
+use gstreamer_pbutils::Discoverer;
 use gtk::cairo::{Context, FontSlant, FontWeight};
 use gtk::prelude::*;
 use gtk::{
-    ApplicationWindow, Box as GtkBox, Button, DrawingArea, Frame, Label, Orientation, Paned,
-    Separator,
+    ApplicationWindow, Box as GtkBox, Button, DrawingArea, FileDialog, FileFilter, Frame, Label,
+    ListBox, ListBoxRow, MenuButton, Orientation, Paned, ScrolledWindow, Separator,
 };
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::mpsc;
 
 pub fn build(window: &ApplicationWindow) {
     install_styles();
 
+    let inspector = InspectorWidgets::new();
+    let (result_sender, result_receiver) = mpsc::channel();
+    let discoverer = Discoverer::new(gstreamer::ClockTime::from_seconds(30))
+        .expect("GStreamer Discoverer should initialize after GStreamer");
+    let _discovered_handler = discoverer.connect_discovered(move |_discoverer, info, error| {
+        let uri = info.uri().to_string();
+        let result = describe_media(info, error.map(|error| error.to_string()));
+        let _ = result_sender.send((uri, result));
+    });
+    discoverer.start();
+
     let root = GtkBox::new(Orientation::Vertical, 0);
     root.add_css_class("app-root");
 
-    root.append(&build_header());
+    let media_panel = build_media_panel(window, discoverer, result_receiver, inspector.clone());
+    root.append(&build_header(window));
 
     let workspace = Paned::new(Orientation::Horizontal);
     workspace.set_wide_handle(true);
     workspace.set_position(278);
-    workspace.set_start_child(Some(&build_media_panel()));
-    workspace.set_end_child(Some(&build_editor_area()));
+    workspace.set_start_child(Some(&media_panel));
+    workspace.set_end_child(Some(&build_editor_area(inspector)));
     workspace.set_vexpand(true);
     root.append(&workspace);
 
@@ -38,7 +55,7 @@ fn install_styles() {
     }
 }
 
-fn build_header() -> GtkBox {
+fn build_header(window: &ApplicationWindow) -> GtkBox {
     let header = GtkBox::new(Orientation::Horizontal, 12);
     header.add_css_class("app-header");
     header.set_margin_start(14);
@@ -65,6 +82,8 @@ fn build_header() -> GtkBox {
     spacer.set_hexpand(true);
     header.append(&spacer);
 
+    header.append(&build_menu_bar(window));
+
     let project_button = Button::with_label("Project settings");
     project_button.add_css_class("quiet-button");
     project_button.set_tooltip_text(Some("Project settings will be added in a later milestone"));
@@ -79,7 +98,197 @@ fn build_header() -> GtkBox {
     header
 }
 
-fn build_media_panel() -> GtkBox {
+fn build_menu_bar(window: &ApplicationWindow) -> GtkBox {
+    let bar = GtkBox::new(Orientation::Horizontal, 2);
+    bar.add_css_class("menu-bar");
+
+    let file = gtk::gio::Menu::new();
+    file.append(Some("New Project"), Some("win.new-project"));
+    file.append(Some("Open Project…"), Some("win.open-project"));
+    file.append(Some("Save Project"), Some("win.save-project"));
+    file.append(Some("Save Project As…"), Some("win.save-project-as"));
+    let file_actions = gtk::gio::Menu::new();
+    file_actions.append(Some("Import Media…"), Some("win.import-media"));
+    file.append_section(None, &file_actions);
+    let export = gtk::gio::Menu::new();
+    export.append(Some("Export Project…"), Some("win.export"));
+    file.append_section(None, &export);
+
+    let edit = gtk::gio::Menu::new();
+    edit.append(Some("Undo"), Some("win.undo"));
+    edit.append(Some("Redo"), Some("win.redo"));
+    let clipboard = gtk::gio::Menu::new();
+    clipboard.append(Some("Cut"), Some("win.cut"));
+    clipboard.append(Some("Copy"), Some("win.copy"));
+    clipboard.append(Some("Paste"), Some("win.paste"));
+    clipboard.append(Some("Delete"), Some("win.delete"));
+    edit.append_section(None, &clipboard);
+    edit.append(Some("Select All"), Some("win.select-all"));
+
+    let tools = gtk::gio::Menu::new();
+    tools.append(Some("Audio Mixer"), Some("win.audio-mixer"));
+    tools.append(Some("Scene Detection"), Some("win.scene-detection"));
+    tools.append(Some("AI Tools"), Some("win.ai-tools"));
+    tools.append(Some("Keyboard Shortcuts"), Some("win.keyboard-shortcuts"));
+
+    let view = gtk::gio::Menu::new();
+    view.append(Some("Full Screen"), Some("win.fullscreen"));
+    view.append(Some("Zoom In"), Some("win.zoom-in"));
+    view.append(Some("Zoom Out"), Some("win.zoom-out"));
+    view.append(Some("Reset Zoom"), Some("win.reset-zoom"));
+    view.append(Some("Reset Workspace Layout"), Some("win.reset-layout"));
+
+    let help = gtk::gio::Menu::new();
+    help.append(Some("Project Saturn User Guide"), Some("win.user-guide"));
+    help.append(Some("Report an Issue"), Some("win.report-issue"));
+    help.append(Some("About Project Saturn"), Some("win.about"));
+
+    for (title, menu) in [
+        ("File", file),
+        ("Edit", edit),
+        ("Tools", tools),
+        ("View", view),
+        ("Help", help),
+    ] {
+        let button = MenuButton::new();
+        button.set_label(title);
+        button.set_menu_model(Some(&menu));
+        button.add_css_class("menu-button");
+        bar.append(&button);
+    }
+
+    let fullscreen_action = gtk::gio::SimpleAction::new("fullscreen", None);
+    let window_for_fullscreen = window.clone();
+    fullscreen_action.connect_activate(move |_, _| {
+        if window_for_fullscreen.is_fullscreen() {
+            window_for_fullscreen.unfullscreen();
+        } else {
+            window_for_fullscreen.fullscreen();
+        }
+    });
+    window.add_action(&fullscreen_action);
+
+    let about_action = gtk::gio::SimpleAction::new("about", None);
+    let window_for_about = window.clone();
+    about_action.connect_activate(move |_, _| show_about_window(&window_for_about));
+    window.add_action(&about_action);
+
+    for name in [
+        "new-project",
+        "open-project",
+        "save-project",
+        "save-project-as",
+        "export",
+        "undo",
+        "redo",
+        "cut",
+        "copy",
+        "paste",
+        "delete",
+        "select-all",
+        "audio-mixer",
+        "scene-detection",
+        "ai-tools",
+        "keyboard-shortcuts",
+        "zoom-in",
+        "zoom-out",
+        "reset-zoom",
+        "reset-layout",
+        "user-guide",
+        "report-issue",
+    ] {
+        let unavailable = gtk::gio::SimpleAction::new(name, None);
+        unavailable.set_enabled(false);
+        window.add_action(&unavailable);
+    }
+
+    bar
+}
+
+fn show_about_window(parent: &ApplicationWindow) {
+    let about = gtk::Window::builder()
+        .title("About Project Saturn")
+        .transient_for(parent)
+        .modal(true)
+        .default_width(360)
+        .default_height(190)
+        .build();
+    let content = GtkBox::new(Orientation::Vertical, 10);
+    content.set_margin_top(24);
+    content.set_margin_bottom(20);
+    content.set_margin_start(24);
+    content.set_margin_end(24);
+
+    let title = Label::new(Some("Project Saturn"));
+    title.add_css_class("about-title");
+    content.append(&title);
+    let version = Label::new(Some("Open-source Linux video editor · v0.1.0"));
+    version.add_css_class("muted-label");
+    content.append(&version);
+    let brand = Label::new(Some("Planned stable release name: Zvirox’s Filmona"));
+    brand.add_css_class("muted-label");
+    brand.set_wrap(true);
+    content.append(&brand);
+
+    let close = Button::with_label("Close");
+    close.set_halign(gtk::Align::End);
+    let about_for_close = about.clone();
+    close.connect_clicked(move |_| about_for_close.close());
+    content.append(&close);
+    about.set_child(Some(&content));
+    about.present();
+}
+
+#[derive(Clone)]
+struct InspectorWidgets {
+    title: Label,
+    kind: Label,
+    duration: Label,
+    dimensions: Label,
+    location: Label,
+}
+
+impl InspectorWidgets {
+    fn new() -> Self {
+        Self {
+            title: Label::new(Some("Nothing selected")),
+            kind: Label::new(Some("—")),
+            duration: Label::new(Some("—")),
+            dimensions: Label::new(Some("—")),
+            location: Label::new(Some("—")),
+        }
+    }
+
+    fn show(&self, name: &str, path: &str, metadata: &MediaMetadata) {
+        self.title.set_text(name);
+        self.kind.set_text(&metadata.kind);
+        self.duration.set_text(&metadata.duration);
+        self.dimensions.set_text(&metadata.dimensions);
+        self.location.set_text(path);
+    }
+}
+
+#[derive(Clone, Default)]
+struct MediaMetadata {
+    kind: String,
+    duration: String,
+    dimensions: String,
+    message: String,
+}
+
+struct MediaRow {
+    name: String,
+    path: String,
+    subtitle: Label,
+    metadata: MediaMetadata,
+}
+
+fn build_media_panel(
+    window: &ApplicationWindow,
+    discoverer: Discoverer,
+    result_receiver: mpsc::Receiver<(String, MediaMetadata)>,
+    inspector: InspectorWidgets,
+) -> GtkBox {
     let panel = GtkBox::new(Orientation::Vertical, 12);
     panel.add_css_class("side-panel");
     panel.set_width_request(250);
@@ -96,18 +305,27 @@ fn build_media_panel() -> GtkBox {
     let actions = GtkBox::new(Orientation::Horizontal, 8);
     let import_button = Button::with_label("＋  Import media");
     import_button.add_css_class("accent-button");
-    import_button.set_sensitive(false);
-    import_button.set_tooltip_text(Some("Media import is the next development milestone"));
     actions.append(&import_button);
     panel.append(&actions);
 
+    let import_action = gtk::gio::SimpleAction::new("import-media", None);
+    let import_button_for_action = import_button.clone();
+    import_action.connect_activate(move |_, _| import_button_for_action.emit_clicked());
+    window.add_action(&import_action);
+    if let Some(application) = window.application() {
+        application.set_accels_for_action("win.import-media", &["<Primary>i"]);
+    }
+
     let search = gtk::SearchEntry::new();
     search.set_placeholder_text(Some("Search project media"));
-    search.set_sensitive(false);
     panel.append(&search);
 
     let separator = Separator::new(Orientation::Horizontal);
     panel.append(&separator);
+
+    let list = ListBox::new();
+    list.add_css_class("media-list");
+    list.set_selection_mode(gtk::SelectionMode::Single);
 
     let empty = GtkBox::new(Orientation::Vertical, 8);
     empty.add_css_class("empty-state");
@@ -128,11 +346,244 @@ fn build_media_panel() -> GtkBox {
     empty_hint.set_justify(gtk::Justification::Center);
     empty.append(&empty_hint);
 
-    panel.append(&empty);
+    let stack = gtk::Stack::new();
+    stack.set_vexpand(true);
+    stack.add_named(&empty, Some("empty"));
+    let scroll = ScrolledWindow::new();
+    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroll.set_child(Some(&list));
+    stack.add_named(&scroll, Some("media"));
+    stack.set_visible_child_name("empty");
+    panel.append(&stack);
+
+    let paths = Rc::new(RefCell::new(Vec::<String>::new()));
+    let rows = Rc::new(RefCell::new(HashMap::<String, MediaRow>::new()));
+    let selected_uri = Rc::new(RefCell::new(None::<String>));
+
+    let dialog_parent = window.clone();
+    let list_for_import = list.clone();
+    let stack_for_import = stack.clone();
+    let paths_for_import = paths.clone();
+    let rows_for_import = rows.clone();
+    let inspector_for_import = inspector.clone();
+    let selected_uri_for_import = selected_uri.clone();
+    let discoverer_for_import = discoverer.clone();
+    import_button.connect_clicked(move |_| {
+        let dialog = FileDialog::builder()
+            .title("Import media into Project Saturn")
+            .build();
+
+        let all_media = FileFilter::new();
+        all_media.set_name(Some("Supported media"));
+        for pattern in [
+            "*.mp4", "*.mkv", "*.mov", "*.webm", "*.avi", "*.m4v", "*.mp3", "*.wav", "*.flac",
+            "*.ogg", "*.m4a", "*.aac", "*.png", "*.jpg", "*.jpeg", "*.webp", "*.bmp", "*.tif",
+            "*.tiff",
+        ] {
+            all_media.add_pattern(pattern);
+        }
+        let any_file = FileFilter::new();
+        any_file.set_name(Some("All files"));
+        any_file.add_pattern("*");
+        let filters = gtk::gio::ListStore::new::<FileFilter>();
+        filters.append(&all_media);
+        filters.append(&any_file);
+        dialog.set_filters(Some(&filters));
+        dialog.set_default_filter(Some(&all_media));
+
+        let list = list_for_import.clone();
+        let stack = stack_for_import.clone();
+        let paths = paths_for_import.clone();
+        let rows = rows_for_import.clone();
+        let inspector = inspector_for_import.clone();
+        let selected_uri = selected_uri_for_import.clone();
+        let discoverer = discoverer_for_import.clone();
+        dialog.open_multiple(
+            Some(&dialog_parent),
+            None::<&gtk::gio::Cancellable>,
+            move |result| {
+                let files = match result {
+                    Ok(files) => files,
+                    Err(error) if error.matches(gtk::gio::IOErrorEnum::Cancelled) => return,
+                    Err(error) => {
+                        eprintln!("Could not open media picker: {error}");
+                        return;
+                    }
+                };
+
+                for index in 0..files.n_items() {
+                    let Some(file) = files.item(index).and_downcast::<gtk::gio::File>() else {
+                        continue;
+                    };
+                    let uri = file.uri().to_string();
+                    if rows.borrow().contains_key(&uri) {
+                        continue;
+                    }
+                    let path = file
+                        .path()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| uri.clone());
+                    let name = file
+                        .basename()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| path.clone());
+
+                    let row = ListBoxRow::new();
+                    row.add_css_class("media-row");
+                    let contents = GtkBox::new(Orientation::Horizontal, 10);
+                    contents.set_margin_top(8);
+                    contents.set_margin_bottom(8);
+                    contents.set_margin_start(8);
+                    contents.set_margin_end(8);
+                    let glyph = Label::new(Some("▧"));
+                    glyph.add_css_class("media-glyph");
+                    contents.append(&glyph);
+                    let labels = GtkBox::new(Orientation::Vertical, 3);
+                    labels.set_hexpand(true);
+                    let title = Label::new(Some(&name));
+                    title.add_css_class("media-name");
+                    title.set_xalign(0.0);
+                    title.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+                    let subtitle = Label::new(Some("Reading metadata…"));
+                    subtitle.add_css_class("muted-label");
+                    subtitle.set_xalign(0.0);
+                    subtitle.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                    labels.append(&title);
+                    labels.append(&subtitle);
+                    contents.append(&labels);
+                    row.set_child(Some(&contents));
+                    list.append(&row);
+
+                    paths.borrow_mut().push(uri.clone());
+                    rows.borrow_mut().insert(
+                        uri.clone(),
+                        MediaRow {
+                            name,
+                            path,
+                            subtitle,
+                            metadata: MediaMetadata {
+                                message: "Reading metadata…".into(),
+                                ..Default::default()
+                            },
+                        },
+                    );
+                    stack.set_visible_child_name("media");
+
+                    if let Err(error) = discoverer.discover_uri_async(&uri) {
+                        if let Some(media_row) = rows.borrow_mut().get_mut(&uri) {
+                            media_row.metadata.message = format!("Could not scan: {error}");
+                            media_row.subtitle.set_text(&media_row.metadata.message);
+                        }
+                    }
+                }
+                if paths.borrow().len() > 0 {
+                    list.select_row(list.row_at_index(0).as_ref());
+                    if let Some(uri) = paths.borrow().first() {
+                        *selected_uri.borrow_mut() = Some(uri.clone());
+                        show_selected(uri, &rows, &inspector);
+                    }
+                }
+            },
+        );
+    });
+
+    let paths_for_selection = paths.clone();
+    let selected_uri_for_selection = selected_uri.clone();
+    let rows_for_selection = rows.clone();
+    let inspector_for_selection = inspector.clone();
+    list.connect_row_selected(move |_list, row| {
+        let Some(row) = row else {
+            return;
+        };
+        let index = row.index() as usize;
+        let Some(uri) = paths_for_selection.borrow().get(index).cloned() else {
+            return;
+        };
+        *selected_uri_for_selection.borrow_mut() = Some(uri.clone());
+        show_selected(&uri, &rows_for_selection, &inspector_for_selection);
+    });
+
+    let rows_for_results = rows.clone();
+    let selected_for_results = selected_uri.clone();
+    let inspector_for_results = inspector.clone();
+    search.connect_search_changed(move |search| {
+        let query = search.text().to_string().to_lowercase();
+        for (index, uri) in paths.borrow().iter().enumerate() {
+            if let Some(row) = list.row_at_index(index as i32) {
+                let name = rows
+                    .borrow()
+                    .get(uri)
+                    .map(|entry| entry.name.to_lowercase())
+                    .unwrap_or_default();
+                row.set_visible(query.is_empty() || name.contains(&query));
+            }
+        }
+    });
+    gtk::glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        while let Ok((uri, metadata)) = result_receiver.try_recv() {
+            if let Some(row) = rows_for_results.borrow_mut().get_mut(&uri) {
+                row.subtitle.set_text(&metadata.message);
+                row.metadata = metadata;
+                if selected_for_results.borrow().as_deref() == Some(uri.as_str()) {
+                    show_selected(&uri, &rows_for_results, &inspector_for_results);
+                }
+            }
+        }
+        gtk::glib::ControlFlow::Continue
+    });
     panel
 }
 
-fn build_editor_area() -> GtkBox {
+fn show_selected(
+    uri: &str,
+    rows: &Rc<RefCell<HashMap<String, MediaRow>>>,
+    inspector: &InspectorWidgets,
+) {
+    if let Some(row) = rows.borrow().get(uri) {
+        inspector.show(&row.name, &row.path, &row.metadata);
+    }
+}
+
+fn describe_media(
+    info: &gstreamer_pbutils::DiscovererInfo,
+    error: Option<String>,
+) -> MediaMetadata {
+    let videos = info.video_streams();
+    let audios = info.audio_streams();
+    let (kind, dimensions) = if let Some(video) = videos.first() {
+        (
+            if video.is_image() { "Image" } else { "Video" }.to_string(),
+            format!("{} × {}", video.width(), video.height()),
+        )
+    } else if !audios.is_empty() {
+        ("Audio".to_string(), "Audio only".to_string())
+    } else {
+        ("Image or unknown media".to_string(), "—".to_string())
+    };
+    let duration = info
+        .duration()
+        .map(|duration| {
+            let seconds = duration.seconds();
+            format!(
+                "{:02}:{:02}:{:02}",
+                seconds / 3600,
+                (seconds / 60) % 60,
+                seconds % 60
+            )
+        })
+        .unwrap_or_else(|| "Still image / unknown".into());
+    let message = error
+        .map(|error| format!("Metadata partial · {error}"))
+        .unwrap_or_else(|| format!("{kind} · {duration}"));
+    MediaMetadata {
+        kind,
+        duration,
+        dimensions,
+        message,
+    }
+}
+
+fn build_editor_area(inspector: InspectorWidgets) -> GtkBox {
     let area = GtkBox::new(Orientation::Vertical, 0);
     area.add_css_class("editor-area");
     area.set_margin_top(14);
@@ -144,7 +595,7 @@ fn build_editor_area() -> GtkBox {
     upper.set_wide_handle(true);
     upper.set_position(790);
     upper.set_start_child(Some(&build_preview_panel()));
-    upper.set_end_child(Some(&build_inspector_panel()));
+    upper.set_end_child(Some(&build_inspector_panel(inspector)));
     upper.set_vexpand(true);
 
     let timeline = build_timeline_panel();
@@ -245,7 +696,7 @@ fn build_transport() -> GtkBox {
     controls
 }
 
-fn build_inspector_panel() -> GtkBox {
+fn build_inspector_panel(inspector: InspectorWidgets) -> GtkBox {
     let panel = GtkBox::new(Orientation::Vertical, 12);
     panel.add_css_class("inspector-panel");
     panel.set_width_request(260);
@@ -259,23 +710,36 @@ fn build_inspector_panel() -> GtkBox {
     let separator = Separator::new(Orientation::Horizontal);
     panel.append(&separator);
 
-    let empty = GtkBox::new(Orientation::Vertical, 8);
-    empty.add_css_class("inspector-empty");
-    empty.set_vexpand(true);
-    empty.set_valign(gtk::Align::Center);
+    inspector.title.add_css_class("inspector-media-title");
+    inspector.title.set_xalign(0.0);
+    inspector.title.set_wrap(true);
+    panel.append(&inspector.title);
+    panel.append(&inspector_row("Type", &inspector.kind));
+    panel.append(&inspector_row("Duration", &inspector.duration));
+    panel.append(&inspector_row("Dimensions", &inspector.dimensions));
 
-    let title = Label::new(Some("Nothing selected"));
-    title.add_css_class("empty-title");
-    empty.append(&title);
-
-    let hint = Label::new(Some("Select a clip to edit its properties."));
-    hint.add_css_class("muted-label");
-    hint.set_wrap(true);
-    hint.set_justify(gtk::Justification::Center);
-    empty.append(&hint);
-
-    panel.append(&empty);
+    let location_heading = Label::new(Some("Location"));
+    location_heading.add_css_class("inspector-key");
+    location_heading.set_xalign(0.0);
+    location_heading.set_margin_top(8);
+    panel.append(&location_heading);
+    inspector.location.add_css_class("muted-label");
+    inspector.location.set_xalign(0.0);
+    inspector.location.set_wrap(true);
+    panel.append(&inspector.location);
     panel
+}
+
+fn inspector_row(name: &str, value: &Label) -> GtkBox {
+    let row = GtkBox::new(Orientation::Vertical, 3);
+    let key = Label::new(Some(name));
+    key.add_css_class("inspector-key");
+    key.set_xalign(0.0);
+    value.add_css_class("inspector-value");
+    value.set_xalign(0.0);
+    row.append(&key);
+    row.append(value);
+    row
 }
 
 fn build_timeline_panel() -> GtkBox {

@@ -7,4 +7,6 @@ description = "A native Linux video editor in development"
 license = "GPL-3.0-only"
 
 [dependencies]
-gtk = { package = "gtk4", version = "0.11.3" }
+gtk = { package = "gtk4", version = "0.11.3", features = ["v4_10"] }
+gstreamer = "0.25.3"
+gstreamer-pbutils = "0.25.3"
