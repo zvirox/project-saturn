@@ -74,6 +74,12 @@ struct UpdateMediaParams {
 }
 
 #[derive(Deserialize)]
+struct RelinkMediaParams {
+    media_id: u64,
+    path: PathBuf,
+}
+
+#[derive(Deserialize)]
 struct FilePathParams {
     path: PathBuf,
 }
@@ -96,12 +102,44 @@ struct RemoveClipParams {
 }
 
 #[derive(Deserialize)]
+struct ClipReferenceParams {
+    track_id: u64,
+    clip_index: usize,
+}
+
+#[derive(Deserialize)]
+struct RemoveClipsParams {
+    clips: Vec<ClipReferenceParams>,
+    #[serde(default)]
+    ripple: bool,
+}
+
+#[derive(Deserialize)]
 struct MoveClipParams {
     track_id: u64,
     clip_index: usize,
     #[serde(default)]
     target_track_id: Option<u64>,
     timeline_start: Tick,
+}
+
+#[derive(Deserialize)]
+struct SplitClipParams {
+    track_id: u64,
+    clip_index: usize,
+    at: Tick,
+}
+
+#[derive(Deserialize)]
+struct SlipClipParams {
+    track_id: u64,
+    clip_index: usize,
+    delta: Tick,
+}
+
+#[derive(Deserialize)]
+struct SetMarkParams {
+    at: Tick,
 }
 
 #[derive(Deserialize)]
@@ -161,6 +199,20 @@ impl EditorEngine {
         serde_json::to_string(&self.document)
             .map(|snapshot| snapshot != self.saved_snapshot)
             .unwrap_or(true)
+    }
+
+    pub fn restore_recovery(
+        &mut self,
+        document: ProjectDocument,
+        source_path: Option<PathBuf>,
+    ) -> Result<(), DispatchError> {
+        document.validate().map_err(DispatchError::Operation)?;
+        self.document = document;
+        self.current_path = source_path;
+        self.undo.clear();
+        self.redo.clear();
+        self.saved_snapshot.clear();
+        Ok(())
     }
 
     pub fn command_status(&self, id: &str) -> Result<CommandStatus, DispatchError> {
@@ -238,6 +290,19 @@ impl EditorEngine {
                 item.width = params.width;
                 item.height = params.height;
                 Ok(json!({"updated": true, "media_id": item.id}))
+            }
+            "project.relink_media" => {
+                let params: RelinkMediaParams = parse_params(request.params)?;
+                if !params.path.is_file() {
+                    return Err(DispatchError::InvalidParameters("The replacement media file does not exist".into()));
+                }
+                let Some(index) = self.document.project.media.iter().position(|item| item.id == params.media_id) else {
+                    return Err(DispatchError::InvalidParameters(format!("Media item {} does not exist", params.media_id)));
+                };
+                self.checkpoint();
+                let media = &mut self.document.project.media[index];
+                media.path = params.path;
+                Ok(json!({"relinked": true, "media_id": media.id, "path": media.path}))
             }
             "file.save" => {
                 let params: FilePathParams = parse_params(request.params)?;
@@ -381,6 +446,155 @@ impl EditorEngine {
                     .clips
                     .remove(params.clip_index);
                 Ok(json!({"removed": true}))
+            }
+            "timeline.ripple_delete" => {
+                let params: RemoveClipParams = parse_params(request.params)?;
+                let track_index = find_track_index(&self.document, params.track_id)?;
+                let clips = &self.document.project.sequence.tracks[track_index].clips;
+                let clip = clips.get(params.clip_index).ok_or_else(|| {
+                    DispatchError::InvalidParameters("Timeline clip does not exist".into())
+                })?;
+                let start = clip.timeline_start.0;
+                let end = start.saturating_add(clip.duration.0);
+                let duration = clip.duration.0;
+                self.checkpoint();
+                let clips = &mut self.document.project.sequence.tracks[track_index].clips;
+                clips.remove(params.clip_index);
+                for later in clips.iter_mut().filter(|item| item.timeline_start.0 >= end) {
+                    later.timeline_start.0 = later.timeline_start.0.saturating_sub(duration);
+                }
+                clips.sort_by_key(|item| item.timeline_start);
+                Ok(json!({"removed": true, "rippled_ticks": duration, "start": start}))
+            }
+            "timeline.ripple_delete_batch" => {
+                let params: RemoveClipsParams = parse_params(request.params)?;
+                if params.clips.is_empty() {
+                    return Err(DispatchError::InvalidParameters("Select one or more timeline clips".into()));
+                }
+                let mut removals = std::collections::BTreeMap::<usize, Vec<usize>>::new();
+                for reference in params.clips {
+                    let track_index = find_track_index(&self.document, reference.track_id)?;
+                    if reference.clip_index >= self.document.project.sequence.tracks[track_index].clips.len() {
+                        return Err(DispatchError::InvalidParameters("Timeline clip does not exist".into()));
+                    }
+                    let indices = removals.entry(track_index).or_default();
+                    if !indices.contains(&reference.clip_index) { indices.push(reference.clip_index); }
+                }
+                self.checkpoint();
+                let mut removed = 0;
+                for (track_index, indices) in removals {
+                    let clips = &mut self.document.project.sequence.tracks[track_index].clips;
+                    let mut indices = indices;
+                    indices.sort_unstable_by(|left, right| right.cmp(left));
+                    for index in indices {
+                        let clip = clips.remove(index);
+                        let end = clip.timeline_start.0.saturating_add(clip.duration.0);
+                        if params.ripple {
+                            for later in clips.iter_mut().filter(|item| item.timeline_start.0 >= end) {
+                                later.timeline_start.0 = later.timeline_start.0.saturating_sub(clip.duration.0);
+                            }
+                        }
+                        removed += 1;
+                    }
+                    clips.sort_by_key(|item| item.timeline_start);
+                }
+                Ok(json!({"removed": removed, "ripple": params.ripple}))
+            }
+            "timeline.split_clip" => {
+                let params: SplitClipParams = parse_params(request.params)?;
+                let track_index = find_track_index(&self.document, params.track_id)?;
+                let track = &self.document.project.sequence.tracks[track_index];
+                let clip = track.clips.get(params.clip_index).ok_or_else(|| {
+                    DispatchError::InvalidParameters("Timeline clip does not exist".into())
+                })?;
+                let split_offset = params.at.0.saturating_sub(clip.timeline_start.0);
+                if split_offset <= 0 || split_offset >= clip.duration.0 {
+                    return Err(DispatchError::InvalidParameters(
+                        "Playhead must be inside the selected clip, away from its edges".into(),
+                    ));
+                }
+                let mut left = clip.clone();
+                let mut right = clip.clone();
+                left.duration = Tick(split_offset);
+                right.timeline_start = params.at;
+                right.source_in.0 = right.source_in.0.saturating_add(split_offset);
+                right.duration.0 = clip.duration.0 - split_offset;
+                let mut properties = Vec::new();
+                for key in &clip.keyframes {
+                    if !properties.contains(&key.property) { properties.push(key.property.clone()); }
+                }
+                for property in &properties {
+                    if let Some(value) = keyframe_value_at(&clip.keyframes, property, split_offset) {
+                        if !left.keyframes.iter().any(|key| &key.property == property && key.time.0 == split_offset) {
+                            left.keyframes.push(Keyframe { property: property.clone(), time: Tick(split_offset), value });
+                        }
+                    }
+                }
+                left.keyframes.retain(|key| key.time.0 <= split_offset);
+                right.keyframes.retain(|key| key.time.0 > split_offset);
+                for key in &mut right.keyframes {
+                    key.time.0 -= split_offset;
+                }
+                for property in properties {
+                    if let Some(value) = keyframe_value_at(&clip.keyframes, &property, split_offset) {
+                        right.keyframes.push(Keyframe { property, time: Tick(0), value });
+                    }
+                }
+                self.checkpoint();
+                let clips = &mut self.document.project.sequence.tracks[track_index].clips;
+                clips[params.clip_index] = left;
+                clips.insert(params.clip_index + 1, right);
+                Ok(json!({"split": true, "track_id": params.track_id, "left_index": params.clip_index, "right_index": params.clip_index + 1}))
+            }
+            "timeline.slip_clip" => {
+                let params: SlipClipParams = parse_params(request.params)?;
+                let track_index = find_track_index(&self.document, params.track_id)?;
+                let clip = find_clip(&self.document, track_index, params.clip_index)?;
+                let next_source_in = clip.source_in.0.saturating_add(params.delta.0);
+                if next_source_in < 0 {
+                    return Err(DispatchError::InvalidParameters("Slip cannot move the source before its beginning".into()));
+                }
+                let media_id = clip.media_id;
+                let duration = clip.duration.0;
+                let media_duration = self.document.project.media.iter().find(|media| media.id == media_id).and_then(|media| media.duration);
+                if media_duration.is_some_and(|length| next_source_in.saturating_add(duration) > length.0) {
+                    return Err(DispatchError::InvalidParameters("Slip cannot move the source beyond the media duration".into()));
+                }
+                self.checkpoint();
+                let clip = &mut self.document.project.sequence.tracks[track_index].clips[params.clip_index];
+                clip.source_in = Tick(next_source_in);
+                Ok(json!({"slipped": true, "source_in": clip.source_in}))
+            }
+            "timeline.set_mark_in" | "timeline.set_mark_out" => {
+                let params: SetMarkParams = parse_params(request.params)?;
+                if params.at.0 < 0 {
+                    return Err(DispatchError::InvalidParameters("Sequence marks cannot be before time zero".into()));
+                }
+                let sequence = &self.document.project.sequence;
+                let (other, label) = if command.id == "timeline.set_mark_in" {
+                    (sequence.mark_out, "In")
+                } else {
+                    (sequence.mark_in, "Out")
+                };
+                if let Some(other) = other {
+                    let valid = if label == "In" { params.at.0 < other.0 } else { params.at.0 > other.0 };
+                    if !valid {
+                        return Err(DispatchError::InvalidParameters("The In point must be before the Out point".into()));
+                    }
+                }
+                self.checkpoint();
+                if label == "In" {
+                    self.document.project.sequence.mark_in = Some(params.at);
+                } else {
+                    self.document.project.sequence.mark_out = Some(params.at);
+                }
+                Ok(json!({"mark": label, "at": params.at}))
+            }
+            "timeline.clear_marks" => {
+                self.checkpoint();
+                self.document.project.sequence.mark_in = None;
+                self.document.project.sequence.mark_out = None;
+                Ok(json!({"cleared": true}))
             }
             "timeline.move_clip" => {
                 let params: MoveClipParams = parse_params(request.params)?;
@@ -620,6 +834,20 @@ fn valid_keyframe_value(property: &KeyframeProperty, value: f64) -> bool {
         KeyframeProperty::Rotation => (-36_000.0..=36_000.0).contains(&value),
         KeyframeProperty::Opacity => (0.0..=1.0).contains(&value),
     }
+}
+
+fn keyframe_value_at(keyframes: &[Keyframe], property: &KeyframeProperty, time: i64) -> Option<f64> {
+    let mut keys: Vec<_> = keyframes.iter().filter(|key| &key.property == property).collect();
+    keys.sort_by_key(|key| key.time);
+    let first = *keys.first()?;
+    if time <= first.time.0 { return Some(first.value); }
+    let last = *keys.last()?;
+    if time >= last.time.0 { return Some(last.value); }
+    let next_index = keys.iter().position(|key| key.time.0 >= time)?;
+    let previous = keys[next_index - 1];
+    let next = keys[next_index];
+    let fraction = (time - previous.time.0) as f64 / (next.time.0 - previous.time.0) as f64;
+    Some(previous.value + (next.value - previous.value) * fraction)
 }
 
 #[cfg(test)]

@@ -1,10 +1,11 @@
 use gstreamer_pbutils::Discoverer;
-use saturn_core::{CommandRequest, CommandStatus, EditorEngine, MediaKind, Tick};
+use saturn_core::{CommandRequest, CommandStatus, EditorEngine, MediaKind, ProjectDocument, Tick, command_catalogue};
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, State, ipc::Channel};
 
 #[derive(Clone, Default)]
@@ -36,13 +37,76 @@ struct OpenverseResponse {
     results: Vec<Value>,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RecoveryMetadata {
+    saved_at: u64,
+    project_name: String,
+    source_path: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MediaAvailability {
+    media_id: u64,
+    missing: bool,
+}
+
+fn recovery_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
+    let directory = app.path().app_data_dir()
+        .map_err(|error| format!("Could not locate the app data folder: {error}"))?
+        .join("recovery");
+    Ok((directory.join("autosave.saturn"), directory.join("autosave.json")))
+}
+
+fn remove_recovery_files(app: &AppHandle) {
+    if let Ok((project, metadata)) = recovery_paths(app) {
+        let _ = std::fs::remove_file(project);
+        let _ = std::fs::remove_file(metadata);
+    }
+}
+
+fn save_recovery_metadata(path: &Path, metadata: &RecoveryMetadata) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(metadata).map_err(|error| error.to_string())?;
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, bytes).map_err(|error| format!("Could not write recovery details: {error}"))?;
+    std::fs::rename(&temporary, path).map_err(|error| format!("Could not finalize recovery details: {error}"))
+}
+
+fn autosave_once(app: &AppHandle, state: &AppState) -> Result<(), String> {
+    let engine = state.0.lock().map_err(|_| "Editor state is unavailable".to_string())?;
+    if !engine.is_dirty() { return Ok(()); }
+    let document = engine.document();
+    let (project_path, metadata_path) = recovery_paths(app)?;
+    let directory = project_path.parent().ok_or_else(|| "Recovery folder has no parent".to_string())?;
+    std::fs::create_dir_all(directory).map_err(|error| format!("Could not create recovery folder: {error}"))?;
+    document.save_atomic(&project_path)?;
+    let metadata = RecoveryMetadata {
+        saved_at: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
+        project_name: document.project.name.clone(),
+        source_path: engine.current_path().map(|path| path.to_string_lossy().into_owned()),
+    };
+    save_recovery_metadata(&metadata_path, &metadata)
+}
+
+fn start_autosave(app: AppHandle, state: AppState) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            if let Err(error) = autosave_once(&app, &state) {
+                eprintln!("Autosave failed: {error}");
+            }
+        }
+    });
+}
+
 #[tauri::command]
 fn execute_command(
     app: AppHandle,
     state: State<'_, AppState>,
     request: CommandRequest,
 ) -> Result<Value, String> {
-    let opening_project = request.id == "file.open";
+    let command_id = request.id.clone();
     let result = state
         .0
         .lock()
@@ -50,13 +114,75 @@ fn execute_command(
         .execute(request)
         .map_err(|error| error.to_string())?;
 
-    if opening_project {
+    if matches!(command_id.as_str(), "file.open" | "project.new" | "file.save") {
+        remove_recovery_files(&app);
+    }
+    let mutating = command_catalogue().iter().find(|command| command.id == command_id)
+        .is_some_and(|command| command.mutating);
+    if mutating && !matches!(command_id.as_str(), "file.open" | "file.save") {
+        let is_dirty = state.0.lock().map_err(|_| "Editor state is unavailable")?.is_dirty();
+        if is_dirty {
+            let autosave_app = app.clone();
+            let autosave_state = AppState(Arc::clone(&state.0));
+            tauri::async_runtime::spawn_blocking(move || {
+                if let Err(error) = autosave_once(&autosave_app, &autosave_state) {
+                    eprintln!("Autosave failed: {error}");
+                }
+            });
+        } else {
+            remove_recovery_files(&app);
+        }
+    }
+    if matches!(command_id.as_str(), "file.open" | "project.add_media" | "project.relink_media") {
         let state = state.0.lock().map_err(|_| "Editor state is unavailable")?;
         for media in &state.document().project.media {
             let _ = app.asset_protocol_scope().allow_file(&media.path);
         }
     }
     Ok(result)
+}
+
+#[tauri::command]
+fn recovery_status(app: AppHandle) -> Result<Value, String> {
+    let (project_path, metadata_path) = recovery_paths(&app)?;
+    if !project_path.is_file() {
+        return Ok(json!({"available": false}));
+    }
+    let document = ProjectDocument::load(&project_path)?;
+    let metadata = std::fs::read(&metadata_path).ok()
+        .and_then(|bytes| serde_json::from_slice::<RecoveryMetadata>(&bytes).ok());
+    let modified = std::fs::metadata(&project_path).ok().and_then(|item| item.modified().ok())
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok()).map(|duration| duration.as_secs());
+    Ok(json!({
+        "available": true,
+        "projectName": metadata.as_ref().map(|item| item.project_name.clone()).unwrap_or(document.project.name),
+        "savedAt": metadata.map(|item| item.saved_at).or(modified).unwrap_or_default(),
+    }))
+}
+
+#[tauri::command]
+fn restore_autosave(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let (project_path, metadata_path) = recovery_paths(&app)?;
+    let document = ProjectDocument::load(&project_path)?;
+    let metadata = std::fs::read(metadata_path).ok()
+        .and_then(|bytes| serde_json::from_slice::<RecoveryMetadata>(&bytes).ok());
+    let source_path = metadata.and_then(|item| item.source_path).map(PathBuf::from);
+    state.0.lock().map_err(|_| "Editor state is unavailable".to_string())?
+        .restore_recovery(document, source_path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn discard_autosave(app: AppHandle) {
+    remove_recovery_files(&app);
+}
+
+#[tauri::command]
+fn check_media_availability(state: State<'_, AppState>) -> Result<Vec<MediaAvailability>, String> {
+    let engine = state.0.lock().map_err(|_| "Editor state is unavailable".to_string())?;
+    Ok(engine.document().project.media.iter().map(|media| MediaAvailability {
+        media_id: media.id,
+        missing: !media.path.is_file(),
+    }).collect())
 }
 
 #[tauri::command]
@@ -67,6 +193,11 @@ fn command_status(state: State<'_, AppState>, id: String) -> Result<CommandStatu
         .map_err(|_| "Editor state is unavailable".to_string())?
         .command_status(&id)
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_command_catalogue() -> Vec<saturn_core::CommandSpec> {
+    command_catalogue().to_vec()
 }
 
 #[tauri::command]
@@ -121,7 +252,7 @@ async fn import_media(
             discovered.push((name, path, metadata));
         }
 
-        let mut engine = engine
+        let mut engine_guard = engine
             .lock()
             .map_err(|_| "Editor state is unavailable".to_string())?;
         for (name, path, (kind, duration, width, height)) in discovered {
@@ -133,15 +264,20 @@ async fn import_media(
                 "width": width,
                 "height": height,
             });
-            engine
+            engine_guard
                 .execute(CommandRequest::new("project.add_media", params))
                 .map_err(|error| error.to_string())?;
             let _ = app.asset_protocol_scope().allow_file(&path);
         }
 
-        engine
+        let status = engine_guard
             .execute(CommandRequest::new("project.status", Value::Null))
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        drop(engine_guard);
+        if let Err(error) = autosave_once(&app, &AppState(Arc::clone(&engine))) {
+            eprintln!("Autosave after media import failed: {error}");
+        }
+        Ok(status)
     })
     .await
     .map_err(|error| format!("Media import task failed: {error}"))?
@@ -151,6 +287,7 @@ async fn import_media(
 async fn start_export(
     state: State<'_, AppState>,
     output_path: String,
+    use_mark_range: bool,
     on_progress: Channel<RenderProgressEvent>,
 ) -> Result<(), String> {
     let document = state
@@ -159,8 +296,16 @@ async fn start_export(
         .map_err(|_| "Editor state is unavailable".to_string())?
         .document()
         .clone();
+    let range = if use_mark_range {
+        match (document.project.sequence.mark_in, document.project.sequence.mark_out) {
+            (Some(start), Some(end)) => Some(saturn_render::RenderRange { start, end }),
+            _ => return Err("Set both In and Out points before exporting the marked range".into()),
+        }
+    } else {
+        None
+    };
     tauri::async_runtime::spawn_blocking(move || {
-        saturn_render::render_project(&document, Path::new(&output_path), |progress| {
+        saturn_render::render_project_range(&document, Path::new(&output_path), range, |progress| {
             let _ = on_progress.send(RenderProgressEvent {
                 fraction_percent: progress.fraction_percent,
                 phase: progress.phase.to_string(),
@@ -364,12 +509,22 @@ async fn ask_local_ai(prompt: String, model: String) -> Result<String, String> {
 }
 
 fn main() {
+    let state = AppState::default();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState::default())
+        .manage(state.clone())
+        .setup(move |app| {
+            start_autosave(app.handle().clone(), state.clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             execute_command,
             command_status,
+            get_command_catalogue,
+            recovery_status,
+            restore_autosave,
+            discard_autosave,
+            check_media_availability,
             import_media,
             start_export,
             search_openverse,

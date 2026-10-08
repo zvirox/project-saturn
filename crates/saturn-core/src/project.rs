@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const PROJECT_FORMAT: &str = "project-saturn.project";
-pub const PROJECT_SCHEMA_VERSION: u32 = 3;
+pub const PROJECT_SCHEMA_VERSION: u32 = 4;
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -65,6 +65,10 @@ pub struct MediaAsset {
 pub struct Sequence {
     pub name: String,
     pub tracks: Vec<Track>,
+    #[serde(default)]
+    pub mark_in: Option<Tick>,
+    #[serde(default)]
+    pub mark_out: Option<Tick>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -165,6 +169,8 @@ impl ProjectDocument {
                 media: Vec::new(),
                 sequence: Sequence {
                     name: "Sequence 1".into(),
+                    mark_in: None,
+                    mark_out: None,
                     tracks: vec![
                         Track {
                             id: 1,
@@ -337,7 +343,7 @@ fn migrate_project(value: &mut serde_json::Value) -> Result<(), String> {
             });
             migrate_project(value)
         }
-        2 => {
+        2 | 3 => {
             value
                 .as_object_mut()
                 .ok_or_else(|| "Project root must be an object".to_string())?

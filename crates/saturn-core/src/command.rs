@@ -17,7 +17,7 @@ impl CommandRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize)]
 pub struct CommandSpec {
     pub id: &'static str,
     pub label: &'static str,
@@ -69,6 +69,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         mutating: true,
     },
     CommandSpec {
+        id: "project.relink_media",
+        label: "Relink Missing Media",
+        menu: &[],
+        shortcut: None,
+        mutating: true,
+    },
+    CommandSpec {
         id: "edit.undo",
         label: "Undo",
         menu: &["Edit"],
@@ -106,14 +113,14 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: "timeline.add_clip",
         label: "Add Clip to Timeline",
-        menu: &["Timeline"],
+        menu: &["Sequence"],
         shortcut: None,
         mutating: true,
     },
     CommandSpec {
         id: "timeline.remove_clip",
         label: "Remove Clip",
-        menu: &["Timeline"],
+        menu: &["Clip"],
         shortcut: None,
         mutating: true,
     },
@@ -121,6 +128,55 @@ pub const COMMANDS: &[CommandSpec] = &[
         id: "timeline.move_clip",
         label: "Move Clip",
         menu: &["Timeline"],
+        shortcut: None,
+        mutating: true,
+    },
+    CommandSpec {
+        id: "timeline.split_clip",
+        label: "Split Clip at Playhead",
+        menu: &["Clip"],
+        shortcut: None,
+        mutating: true,
+    },
+    CommandSpec {
+        id: "timeline.slip_clip",
+        label: "Slip Clip Source",
+        menu: &[],
+        shortcut: None,
+        mutating: true,
+    },
+    CommandSpec {
+        id: "timeline.ripple_delete",
+        label: "Ripple Delete",
+        menu: &["Clip"],
+        shortcut: Some("Shift+Delete"),
+        mutating: true,
+    },
+    CommandSpec {
+        id: "timeline.ripple_delete_batch",
+        label: "Ripple Delete Selected Clips",
+        menu: &[],
+        shortcut: None,
+        mutating: true,
+    },
+    CommandSpec {
+        id: "timeline.set_mark_in",
+        label: "Set In Point",
+        menu: &["Markers"],
+        shortcut: Some("I"),
+        mutating: true,
+    },
+    CommandSpec {
+        id: "timeline.set_mark_out",
+        label: "Set Out Point",
+        menu: &["Markers"],
+        shortcut: Some("O"),
+        mutating: true,
+    },
+    CommandSpec {
+        id: "timeline.clear_marks",
+        label: "Clear In/Out Points",
+        menu: &["Markers"],
         shortcut: None,
         mutating: true,
     },

@@ -16,6 +16,12 @@ pub struct RenderProgress {
     pub phase: &'static str,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct RenderRange {
+    pub start: Tick,
+    pub end: Tick,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputFormat {
     Mp4,
@@ -42,6 +48,15 @@ impl OutputFormat {
 pub fn render_project(
     document: &ProjectDocument,
     output_path: &Path,
+    on_progress: impl FnMut(RenderProgress),
+) -> Result<(), String> {
+    render_project_range(document, output_path, None, on_progress)
+}
+
+pub fn render_project_range(
+    document: &ProjectDocument,
+    output_path: &Path,
+    range: Option<RenderRange>,
     mut on_progress: impl FnMut(RenderProgress),
 ) -> Result<(), String> {
     document.validate().map_err(|error| error.to_string())?;
@@ -54,6 +69,14 @@ pub fn render_project(
         .all(|track| track.clips.is_empty())
     {
         return Err("Add at least one clip to the timeline before rendering".into());
+    }
+    let ranged_document = match range {
+        Some(range) => Some(slice_document(document, range)?),
+        None => None,
+    };
+    let render_document = ranged_document.as_ref().unwrap_or(document);
+    if render_document.project.sequence.tracks.iter().all(|track| track.clips.is_empty()) {
+        return Err("The In/Out range does not contain any clips to render".into());
     }
     let output_path = absolute_output_path(output_path)?;
 
@@ -70,7 +93,7 @@ pub fn render_project(
         fraction_percent: 0,
         phase: "Preparing timeline",
     });
-    let timeline = build_timeline(document)?;
+    let timeline = build_timeline(render_document)?;
     let profile = encoding_profile(format)?;
     let output_uri = gst::glib::filename_to_uri(&output_path, None)
         .map_err(|error| format!("Output path is not a valid file URI: {error}"))?;
@@ -133,6 +156,35 @@ pub fn render_project(
         phase: "Complete",
     });
     Ok(())
+}
+
+fn slice_document(document: &ProjectDocument, range: RenderRange) -> Result<ProjectDocument, String> {
+    if range.start.0 < 0 || range.end.0 <= range.start.0 {
+        return Err("Export range must have an Out point after its In point".into());
+    }
+    let mut sliced = document.clone();
+    for track in &mut sliced.project.sequence.tracks {
+        let mut clips = Vec::new();
+        for original in &track.clips {
+            let original_start = original.timeline_start.0;
+            let original_end = original_start.saturating_add(original.duration.0);
+            let intersect_start = original_start.max(range.start.0);
+            let intersect_end = original_end.min(range.end.0);
+            if intersect_start >= intersect_end { continue; }
+            let trim = intersect_start - original_start;
+            let mut clip = original.clone();
+            clip.timeline_start = Tick(intersect_start - range.start.0);
+            clip.source_in.0 = clip.source_in.0.saturating_add(trim);
+            clip.duration = Tick(intersect_end - intersect_start);
+            clip.keyframes.retain(|key| key.time.0 >= trim && key.time.0 <= trim + clip.duration.0);
+            for key in &mut clip.keyframes { key.time.0 -= trim; }
+            clips.push(clip);
+        }
+        track.clips = clips;
+    }
+    sliced.project.sequence.mark_in = None;
+    sliced.project.sequence.mark_out = None;
+    Ok(sliced)
 }
 
 fn build_timeline(document: &ProjectDocument) -> Result<ges::Timeline, String> {

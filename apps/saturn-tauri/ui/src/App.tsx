@@ -1,9 +1,10 @@
-import { type CSSProperties, type DragEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type DragEvent, type MouseEvent, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Channel, convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open, save } from "@tauri-apps/plugin-dialog";
 
 type Workspace = "edit" | "color" | "audio" | "keyframes" | "export" | "library" | "ai";
+type TimelineTool = "select" | "trackForward" | "ripple" | "razor" | "slip" | "pen" | "hand";
 type MediaKind = "video" | "audio" | "image" | "unknown";
 type MediaAsset = {
   id: number;
@@ -30,18 +31,20 @@ type ProjectDocument = {
   project: {
     name: string;
     media: MediaAsset[];
-    sequence: { name: string; tracks: Track[] };
+    sequence: { name: string; tracks: Track[]; mark_in: number | null; mark_out: number | null };
     settings: { width: number; height: number; frame_rate: { numerator: number; denominator: number } };
   };
 };
 type ProjectStatus = { document: ProjectDocument; path: string | null; is_dirty: boolean };
 type CommandStatus = { enabled: boolean; reason: string | null };
+type RecoveryStatus = { available: boolean; projectName?: string; savedAt?: number };
+type MediaAvailability = { mediaId: number; missing: boolean };
+type CommandSpec = { id: string; label: string; menu: string[]; shortcut: string | null; mutating: boolean };
 type SelectedClip = { track_id: number; clip_index: number };
 type DraggedClip = SelectedClip;
 type OpenverseAsset = { id: string; title: string; mediaUrl: string; sourceUrl: string; thumbnailUrl: string | null; creator: string | null; license: string | null; licenseUrl: string | null };
 
 const TICKS_PER_SECOND = 254_016_000_000;
-const PIXELS_PER_SECOND = 72;
 const workspaces: { id: Workspace; label: string }[] = [
   { id: "edit", label: "Edit" },
   { id: "color", label: "Color" },
@@ -50,6 +53,15 @@ const workspaces: { id: Workspace; label: string }[] = [
   { id: "export", label: "Export" },
   { id: "library", label: "Asset library" },
   { id: "ai", label: "AI assistant" },
+];
+const timelineTools: { id: TimelineTool; icon: IconName; label: string; shortcut: string }[] = [
+  { id: "select", icon: "select", label: "Selection tool", shortcut: "V" },
+  { id: "trackForward", icon: "trackForward", label: "Track select forward", shortcut: "A" },
+  { id: "ripple", icon: "ripple", label: "Ripple delete tool", shortcut: "B" },
+  { id: "razor", icon: "razor", label: "Razor tool", shortcut: "C" },
+  { id: "slip", icon: "slip", label: "Slip tool", shortcut: "Y" },
+  { id: "pen", icon: "pen", label: "Keyframe pen tool", shortcut: "P" },
+  { id: "hand", icon: "hand", label: "Hand tool", shortcut: "H" },
 ];
 const mediaFilters = [{ name: "Video, audio, and images", extensions: ["mp4", "mkv", "mov", "webm", "avi", "m4v", "mp3", "wav", "flac", "ogg", "m4a", "aac", "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"] }];
 const projectFilters = [{ name: "Easy Edit Pro project", extensions: ["saturn"] }];
@@ -65,7 +77,9 @@ async function runCommand<T = unknown>(id: string, params: unknown = null): Prom
   return invoke<T>("execute_command", { request: { id, params } });
 }
 
-function Icon({ name }: { name: "fullscreen" | "restore" | "close" | "media" | "add" | "undo" | "redo" }) {
+type IconName = "fullscreen" | "restore" | "close" | "media" | "add" | "undo" | "redo" | "select" | "trackForward" | "ripple" | "razor" | "slip" | "pen" | "hand" | "snap" | "split" | "remove" | "markIn" | "markOut" | "zoomIn" | "zoomOut" | "clearMarks" | "export" | "fileNew" | "fileOpen" | "fileSave" | "import" | "help" | "window";
+
+function Icon({ name }: { name: IconName }) {
   const paths = {
     fullscreen: <path d="M7 3H3v4m10-4h4v4M3 13v4h4m10-4v4h-4" />,
     restore: <path d="M7 3h10v10M13 7H3v10h10V7Z" />,
@@ -74,6 +88,28 @@ function Icon({ name }: { name: "fullscreen" | "restore" | "close" | "media" | "
     add: <path d="M12 5v14m-7-7h14" />,
     undo: <path d="M9 14 4 9l5-5M4 9h9a6 6 0 0 1 0 12h-2" />,
     redo: <path d="m15 14 5-5-5-5m5 5h-9a6 6 0 0 0 0 12h2" />,
+    select: <path d="m5 3 10 9-5 .7L8 18z" />,
+    trackForward: <><path d="M3 4h8v4H3zM3 10h8v4H3zM3 16h8v2H3z" /><path d="M13 10h5m-2-2 2 2-2 2" /></>,
+    ripple: <><path d="m8 5-4 5 4 5M16 5l4 5-4 5M10 10h4" /><path d="M3 18h14" /></>,
+    razor: <><circle cx="6" cy="6" r="2" /><circle cx="6" cy="14" r="2" /><path d="m8 7 9 9M8 13l9-9" /></>,
+    slip: <><path d="M3 4h14v12H3zM6 2v2m8-2v2m-8 12v2m8-2v2" /><path d="M8 10h6m-2-2 2 2-2 2" /></>,
+    pen: <><path d="m4 14 9-9 3 3-9 9H4zM12 6l3 3M4 17h12" /></>,
+    hand: <path d="M6 11V5a1.5 1.5 0 0 1 3 0v5-7a1.5 1.5 0 0 1 3 0v7-5a1.5 1.5 0 0 1 3 0v6-3a1.5 1.5 0 0 1 3 0v5c0 4-2 7-6 7h-1c-2 0-3.5-1-4.5-2.5L3 13a1.8 1.8 0 0 1 3-2z" />,
+    snap: <path d="M4 3v5a6 6 0 0 0 12 0V3M4 8h12M10 14v3m-3 0h6" />,
+    split: <><path d="M4 4h12v12H4zM10 4v12" /><path d="m7 8 3 2-3 2m6-4-3 2 3 2" /></>,
+    remove: <><path d="M4 6h12m-10 0 1 11h6l1-11M8 6V4h4v2m-3 3v5m2-5v5" /></>,
+    markIn: <path d="M6 3H4v14h2m10-14h-2m-2 0h-2" />,
+    markOut: <path d="M14 3h2v14h-2M4 3h2m2 0h2" />,
+    zoomIn: <><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4M8.5 6v5m-2.5-2.5h5" /></>,
+    zoomOut: <><circle cx="8.5" cy="8.5" r="5.5" /><path d="m13 13 4 4M6 8.5h5" /></>,
+    clearMarks: <><circle cx="10" cy="10" r="7" /><path d="m8 8 4 4m0-4-4 4" /></>,
+    export: <><path d="M10 13V3m-4 4 4-4 4 4M4 12v5h12v-5" /></>,
+    fileNew: <><path d="M5 2h7l4 4v12H5zM12 2v5h4" /><path d="M10 10v6m-3-3h6" /></>,
+    fileOpen: <path d="M2 5h6l2 2h8v10H2zM2 8h16" />,
+    fileSave: <><path d="M3 3h12l2 2v12H3zM6 3v5h8V3M6 17v-6h8v6" /><path d="M10 12v4m-2-2h4" /></>,
+    import: <><path d="M10 3v10m-4-4 4 4 4-4M3 15v3h14v-3" /></>,
+    help: <><circle cx="10" cy="10" r="8" /><path d="M7.8 7.5A2.3 2.3 0 1 1 11 9.7c-.8.5-1 1-1 2m0 2.5v.1" /></>,
+    window: <><rect x="2" y="3" width="16" height="14" rx="1" /><path d="M2 7h16M7 7v10" /></>,
   };
   return <svg viewBox="0 0 20 20" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -103,6 +139,7 @@ function App() {
   const [projectState, setProjectState] = useState<ProjectStatus | null>(null);
   const [selectedMediaId, setSelectedMediaId] = useState<number | null>(null);
   const [selectedClip, setSelectedClip] = useState<SelectedClip | null>(null);
+  const [selectedClips, setSelectedClips] = useState<SelectedClip[]>([]);
   const [playhead, setPlayhead] = useState(0);
   const [search, setSearch] = useState("");
   const [connection, setConnection] = useState("Connecting to Rust core…");
@@ -113,11 +150,17 @@ function App() {
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [undoStatus, setUndoStatus] = useState<CommandStatus>({ enabled: false, reason: "Nothing to undo" });
   const [redoStatus, setRedoStatus] = useState<CommandStatus>({ enabled: false, reason: "Nothing to redo" });
+  const [missingMediaIds, setMissingMediaIds] = useState<Set<number>>(new Set());
+  const [commands, setCommands] = useState<CommandSpec[]>([]);
+  const [snapEnabled, setSnapEnabled] = useState(true);
+  const [timelineTool, setTimelineTool] = useState<TimelineTool>("select");
+  const [timelineZoom, setTimelineZoom] = useState(72);
   const [colorDraft, setColorDraft] = useState<ColorAdjustments>({ exposure: 0, contrast: 1, saturation: 1 });
   const [gainDrafts, setGainDrafts] = useState<Record<number, number>>({});
   const [keyframeProperty, setKeyframeProperty] = useState<KeyframeProperty>("opacity");
   const [keyframeValue, setKeyframeValue] = useState("1");
   const [exportFormat, setExportFormat] = useState<"mp4" | "webm">("mp4");
+  const [exportMarkedRange, setExportMarkedRange] = useState(false);
   const [rendering, setRendering] = useState(false);
   const [renderProgress, setRenderProgress] = useState<{ fractionPercent: number; phase: string } | null>(null);
   const [assetQuery, setAssetQuery] = useState("");
@@ -128,25 +171,42 @@ function App() {
   const [aiReply, setAiReply] = useState("");
   const programVideoRef = useRef<HTMLVideoElement>(null);
   const programAudioRef = useRef<HTMLAudioElement>(null);
+  const handPan = useRef<{ x: number; scrollLeft: number } | null>(null);
+  const slipDrag = useRef<{ x: number; trackId: number; clipIndex: number } | null>(null);
 
   const refreshProject = useCallback(async () => {
-    const [status, undo, redo] = await Promise.all([
+    const [status, undo, redo, mediaAvailability] = await Promise.all([
       runCommand<ProjectStatus>("project.status"),
       invoke<CommandStatus>("command_status", { id: "edit.undo" }),
       invoke<CommandStatus>("command_status", { id: "edit.redo" }),
+      invoke<MediaAvailability[]>("check_media_availability"),
     ]);
     setProjectState(status);
     setUndoStatus(undo);
     setRedoStatus(redo);
+    setMissingMediaIds(new Set(mediaAvailability.filter((item) => item.missing).map((item) => item.mediaId)));
     setConnection("Rust core connected");
     setSelectedMediaId((current) => current ?? status.document.project.media[0]?.id ?? null);
   }, []);
 
   useEffect(() => {
     let active = true;
+    invoke<CommandSpec[]>("get_command_catalogue").then((catalogue) => { if (active) setCommands(catalogue); }).catch(() => {});
     refreshProject().catch((error: unknown) => {
       if (active) setConnection(`Rust core error: ${String(error)}`);
     });
+    invoke<RecoveryStatus>("recovery_status").then(async (recovery) => {
+      if (!active || !recovery.available) return;
+      const recover = await confirm(`Easy Edit Pro found an autosave for “${recovery.projectName ?? "Untitled project"}”. Recover it?`, { title: "Recover autosaved project", kind: "warning" });
+      if (!active) return;
+      if (recover) {
+        await invoke("restore_autosave");
+        await refreshProject();
+        setNotice("Autosaved project recovered. Save it to keep your changes.");
+      } else {
+        await invoke("discard_autosave");
+      }
+    }).catch((error: unknown) => { if (active) setNotice(`Recovery check failed: ${String(error)}`); });
     return () => { active = false; };
   }, [refreshProject]);
 
@@ -173,7 +233,7 @@ function App() {
     return null;
   }, [media, playhead, project]);
   const timelineEndSeconds = Math.max(14, ...(project?.sequence.tracks ?? []).flatMap((track) => track.clips.map((clip) => (clip.timeline_start + clip.duration) / TICKS_PER_SECOND + 2)));
-  const timelineWidth = timelineEndSeconds * PIXELS_PER_SECOND + 120;
+  const timelineWidth = timelineEndSeconds * timelineZoom + 120;
 
   useEffect(() => {
     if (selectedTimelineClip) setColorDraft(selectedTimelineClip.color);
@@ -197,15 +257,17 @@ function App() {
     player.volume = Math.max(0, Math.min(1, 10 ** (activeClip.track.gain_db / 20)));
   }, [activeClip]);
 
-  async function perform(id: string, params: unknown = null, success?: string) {
+  async function perform(id: string, params: unknown = null, success?: string): Promise<boolean> {
     setBusy(true);
     setNotice("");
     try {
       await runCommand(id, params);
       await refreshProject();
       if (success) setNotice(success);
+      return true;
     } catch (error) {
       setNotice(String(error));
+      return false;
     } finally {
       setBusy(false);
     }
@@ -239,6 +301,7 @@ function App() {
     setNewProjectOpen(false);
     setSelectedMediaId(null);
     setSelectedClip(null);
+    setSelectedClips([]);
     setPlayhead(0);
     await perform("project.new", { name }, "New project created");
   }
@@ -252,6 +315,7 @@ function App() {
     try {
       await runCommand("file.open", { path });
       setSelectedClip(null);
+      setSelectedClips([]);
       setPlayhead(0);
       await refreshProject();
       setNotice("Project opened");
@@ -292,7 +356,7 @@ function App() {
     setRenderProgress({ fractionPercent: 0, phase: "Preparing timeline" });
     setNotice("");
     try {
-      await invoke("start_export", { outputPath, onProgress: channel });
+      await invoke("start_export", { outputPath, useMarkRange: exportMarkedRange, onProgress: channel });
       setRenderProgress({ fractionPercent: 100, phase: "Complete" });
       setNotice(`Export complete: ${outputPath}`);
     } catch (error) {
@@ -356,9 +420,12 @@ function App() {
     try {
       const status = await invoke<ProjectStatus>("import_media", { paths });
       setProjectState(status);
+      const availability = await invoke<MediaAvailability[]>("check_media_availability");
+      setMissingMediaIds(new Set(availability.filter((item) => item.missing).map((item) => item.mediaId)));
       const lastItem = status.document.project.media.at(-1);
       if (lastItem) setSelectedMediaId(lastItem.id);
       setSelectedClip(null);
+      setSelectedClips([]);
       setNotice(`${paths.length} media file${paths.length === 1 ? "" : "s"} imported`);
       const [undo, redo] = await Promise.all([
         invoke<CommandStatus>("command_status", { id: "edit.undo" }),
@@ -373,6 +440,13 @@ function App() {
     }
   }
 
+  async function relinkMedia(mediaId: number) {
+    const path = await open({ title: "Relink missing media", multiple: false, filters: mediaFilters });
+    if (typeof path !== "string") return;
+    const ok = await perform("project.relink_media", { media_id: mediaId, path }, "Media relinked");
+    if (ok) setMissingMediaIds((current) => { const next = new Set(current); next.delete(mediaId); return next; });
+  }
+
   async function addSelectedToTimeline() {
     if (!selectedMedia || !project) return;
     const desiredKind = selectedMedia.kind === "audio" ? "audio" : "video";
@@ -385,6 +459,7 @@ function App() {
     try {
       const result = await runCommand<SelectedClip>("timeline.add_clip", { media_id: selectedMedia.id, track_id: track.id });
       setSelectedClip(result);
+      setSelectedClips([]);
       setPlayhead(0);
       await refreshProject();
       setNotice("Clip added to timeline");
@@ -397,8 +472,129 @@ function App() {
 
   async function removeSelectedClip() {
     if (!selectedClip) return;
-    await perform("timeline.remove_clip", selectedClip, "Clip removed");
+    if (selectedClips.length > 1) {
+      await perform("timeline.ripple_delete_batch", { clips: selectedClips, ripple: false }, `${selectedClips.length} clips removed`);
+    } else {
+      await perform("timeline.remove_clip", selectedClip, "Clip removed");
+    }
     setSelectedClip(null);
+    setSelectedClips([]);
+  }
+
+  async function splitSelectedClip() {
+    if (!selectedClip || !selectedTimelineClip) return;
+    const split = await perform("timeline.split_clip", { ...selectedClip, at: playhead }, "Clip split at playhead");
+    if (split) { setSelectedClip({ ...selectedClip, clip_index: selectedClip.clip_index + 1 }); setSelectedClips([]); }
+  }
+
+  async function rippleDeleteSelectedClip() {
+    if (!selectedClip) return;
+    if (selectedClips.length > 1) {
+      await perform("timeline.ripple_delete_batch", { clips: selectedClips, ripple: true }, `${selectedClips.length} clips ripple deleted`);
+    } else {
+      await perform("timeline.ripple_delete", selectedClip, "Clip ripple deleted");
+    }
+    setSelectedClip(null);
+    setSelectedClips([]);
+  }
+
+  async function handleTimelineClipClick(event: MouseEvent<HTMLDivElement>, trackId: number, clipIndex: number, clip: Clip) {
+    const selection = { track_id: trackId, clip_index: clipIndex };
+    setSelectedClip(selection);
+    if (timelineTool === "trackForward") {
+      const track = project?.sequence.tracks.find((item) => item.id === trackId);
+      setSelectedClips((track?.clips.slice(clipIndex) ?? []).map((_, offset) => ({ track_id: trackId, clip_index: clipIndex + offset })));
+      setPlayhead(clip.timeline_start);
+      return;
+    }
+    setSelectedClips([]);
+    if (timelineTool === "hand" || timelineTool === "slip") return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const fraction = Math.max(0, Math.min(1, (event.clientX - bounds.left) / Math.max(1, bounds.width)));
+    const clickedTime = Math.round(clip.timeline_start + fraction * clip.duration);
+    if (timelineTool === "razor") {
+      setPlayhead(clickedTime);
+      const ok = await perform("timeline.split_clip", { ...selection, at: clickedTime }, "Clip split");
+      if (ok) { setSelectedClip({ ...selection, clip_index: clipIndex + 1 }); setSelectedClips([]); }
+    } else if (timelineTool === "ripple") {
+      await perform("timeline.ripple_delete", selection, "Clip ripple deleted");
+      setSelectedClip(null);
+      setSelectedClips([]);
+    } else if (timelineTool === "pen") {
+      await perform("clip.set_keyframe", { ...selection, property: keyframeProperty, time: Math.max(0, Math.min(clip.duration, clickedTime - clip.timeline_start)), value: Number(keyframeValue) }, "Keyframe added");
+    } else {
+      setPlayhead(clip.timeline_start);
+    }
+  }
+
+  function beginSlip(event: PointerEvent<HTMLDivElement>, trackId: number, clipIndex: number) {
+    if (timelineTool !== "slip") return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setSelectedClip({ track_id: trackId, clip_index: clipIndex });
+    slipDrag.current = { x: event.clientX, trackId, clipIndex };
+  }
+
+  async function finishSlip(event: PointerEvent<HTMLDivElement>) {
+    const drag = slipDrag.current;
+    if (!drag) return;
+    slipDrag.current = null;
+    const frameRate = project?.settings.frame_rate ?? { numerator: 30, denominator: 1 };
+    const frameTicks = Math.round(TICKS_PER_SECOND * frameRate.denominator / frameRate.numerator);
+    const delta = Math.round((event.clientX - drag.x) / timelineZoom * TICKS_PER_SECOND / frameTicks) * frameTicks;
+    if (delta !== 0) await perform("timeline.slip_clip", { track_id: drag.trackId, clip_index: drag.clipIndex, delta }, "Clip source slipped");
+  }
+
+  function handleTimelinePanStart(event: PointerEvent<HTMLDivElement>) {
+    if (timelineTool !== "hand") return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    handPan.current = { x: event.clientX, scrollLeft: event.currentTarget.scrollLeft };
+  }
+
+  function handleTimelinePanMove(event: PointerEvent<HTMLDivElement>) {
+    if (timelineTool !== "hand" || !handPan.current) return;
+    event.currentTarget.scrollLeft = handPan.current.scrollLeft - (event.clientX - handPan.current.x);
+  }
+
+  function handleTimelinePanEnd() { handPan.current = null; }
+
+  async function invokeMenuCommand(id: string) {
+    switch (id) {
+      case "project.new":
+        if (await ensureDiscardIsOkay()) { setNewProjectName("Untitled project"); setNewProjectOpen(true); }
+        break;
+      case "file.open": await openProject(); break;
+      case "file.save": await saveProject(); break;
+      case "project.add_media": await importMedia(); break;
+      case "edit.undo": case "edit.redo": await perform(id); break;
+      case "timeline.split_clip": await splitSelectedClip(); break;
+      case "timeline.ripple_delete": await rippleDeleteSelectedClip(); break;
+      case "timeline.remove_clip": await removeSelectedClip(); break;
+      case "timeline.set_mark_in": await perform(id, { at: playhead }, "In point set"); break;
+      case "timeline.set_mark_out": await perform(id, { at: playhead }, "Out point set"); break;
+      case "timeline.clear_marks": await perform(id, null, "In/Out points cleared"); break;
+      case "timeline.add_clip": await addSelectedToTimeline(); break;
+      case "app.export": setWorkspace("export"); break;
+      case "view.toggle_snap": setSnapEnabled((enabled) => !enabled); break;
+      case "view.zoom_in": setTimelineZoom((zoom) => Math.min(240, zoom * 1.2)); break;
+      case "view.zoom_out": setTimelineZoom((zoom) => Math.max(24, zoom / 1.2)); break;
+      case "view.zoom_reset": setTimelineZoom(72); break;
+      case "app.quit": await getCurrentWindow().close(); break;
+      case "help.shortcuts": setNotice("Timeline tools: V Select · A Track Select Forward · C Razor · B Ripple · Y Slip · P Keyframe · H Hand · S Snap"); break;
+      case "help.about": setNotice("Easy Edit Pro · Open source Linux video editor"); break;
+      default:
+        if (id.startsWith("workspace.")) setWorkspace(id.slice("workspace.".length) as Workspace);
+        break;
+    }
+  }
+
+  function handleTimelineRulerClick(event: MouseEvent<HTMLDivElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const scroller = event.currentTarget.closest(".timeline-scroller");
+    const scrollLeft = scroller instanceof HTMLElement ? scroller.scrollLeft : 0;
+    const seconds = Math.max(0, (event.clientX - bounds.left + scrollLeft) / timelineZoom);
+    setPlayhead(Math.round(seconds * TICKS_PER_SECOND));
   }
 
   async function handleClipDrop(event: DragEvent<HTMLDivElement>, targetTrackId: number) {
@@ -409,14 +605,15 @@ function App() {
     const scroller = event.currentTarget.closest(".timeline-scroller");
     const laneLeft = event.currentTarget.getBoundingClientRect().left;
     const scrollLeft = scroller instanceof HTMLElement ? scroller.scrollLeft : 0;
-    const seconds = Math.max(0, (event.clientX - laneLeft + scrollLeft) / PIXELS_PER_SECOND);
+    const seconds = Math.max(0, (event.clientX - laneLeft + scrollLeft) / timelineZoom);
     const frameRate = project?.settings.frame_rate ?? { numerator: 30, denominator: 1 };
     const frameTicks = Math.round(TICKS_PER_SECOND * frameRate.denominator / frameRate.numerator);
-    const snappedStart = Math.round(seconds * TICKS_PER_SECOND / frameTicks) * frameTicks;
+    const snappedStart = snapEnabled ? Math.round(seconds * TICKS_PER_SECOND / frameTicks) * frameTicks : Math.round(seconds * TICKS_PER_SECOND);
     setBusy(true);
     try {
       const result = await runCommand<SelectedClip & { moved: boolean }>("timeline.move_clip", { ...dragged, target_track_id: targetTrackId, timeline_start: snappedStart });
       setSelectedClip({ track_id: result.track_id, clip_index: result.clip_index });
+      setSelectedClips([]);
       await refreshProject();
       setNotice("Clip moved");
     } catch (error) {
@@ -466,6 +663,10 @@ function App() {
       }
       case "export":
         return <><h2>Export</h2><p>Render the sequence using its project resolution and frame rate.</p>
+          <div className="control">In point <span>{project?.sequence.mark_in == null ? "Not set" : formatTime(project.sequence.mark_in)}</span></div>
+          <div className="control">Out point <span>{project?.sequence.mark_out == null ? "Not set" : formatTime(project.sequence.mark_out)}</span></div>
+          <label className="range-export"><input type="checkbox" checked={exportMarkedRange} disabled={project?.sequence.mark_in == null || project?.sequence.mark_out == null} onChange={(event) => setExportMarkedRange(event.target.checked)} /> Export marked In/Out range</label>
+          <button disabled={project?.sequence.mark_in == null && project?.sequence.mark_out == null} onClick={() => void invokeMenuCommand("timeline.clear_marks")}>Clear marks</button>
           <label>Format <select value={exportFormat} disabled={rendering} onChange={(event) => setExportFormat(event.target.value as "mp4" | "webm")}><option value="mp4">MP4 · H.264 + AAC</option><option value="webm">WebM · VP8 + Vorbis</option></select></label>
           <div className="control">Resolution <span>{project ? `${project.settings.width} × ${project.settings.height}` : "—"}</span></div>
           <div className="control">Frame rate <span>{project ? `${project.settings.frame_rate.numerator}/${project.settings.frame_rate.denominator} fps` : "—"}</span></div>
@@ -519,33 +720,62 @@ function App() {
     return <div className="monitor-stage"><strong>Preview unavailable</strong><small>Easy Edit Pro could not identify this media type.</small></div>;
   };
 
+  function renderMenu(menu: string) {
+    const commandItems = commands.filter((command) => command.menu[0] === menu).map((command) => ({ id: command.id, label: command.label, shortcut: command.shortcut, disabled: busy || ((command.id === "edit.undo") && !undoStatus.enabled) || ((command.id === "edit.redo") && !redoStatus.enabled) || ((["timeline.split_clip", "timeline.ripple_delete", "timeline.remove_clip"].includes(command.id)) && !selectedClip) || (command.id === "timeline.add_clip" && !selectedMedia) }));
+    const extraItems: { id: string; label: string; shortcut?: string | null; disabled?: boolean }[] = menu === "File"
+      ? [{ id: "app.export", label: "Export…", shortcut: null }, { id: "app.quit", label: "Quit", shortcut: "Ctrl+Q" }]
+      : menu === "View"
+        ? [{ id: "view.toggle_snap", label: `Snap to frame${snapEnabled ? " ✓" : ""}`, shortcut: "S" }, { id: "view.zoom_in", label: "Zoom In", shortcut: "+" }, { id: "view.zoom_out", label: "Zoom Out", shortcut: "−" }, { id: "view.zoom_reset", label: "Reset Timeline Zoom", shortcut: "0" }]
+        : menu === "Window"
+          ? workspaces.map((item) => ({ id: `workspace.${item.id}`, label: `${item.label}${workspace === item.id ? " ✓" : ""}`, shortcut: null }))
+          : menu === "Help"
+            ? [{ id: "help.shortcuts", label: "Keyboard Shortcuts", shortcut: null }, { id: "help.about", label: "About Easy Edit Pro", shortcut: null }]
+            : [];
+    const items = [...commandItems, ...extraItems];
+    return <details className="app-menu" key={menu}><summary>{menu}</summary><div className="menu-popover">{items.map((item) => <button key={item.id} onClick={(event) => { void invokeMenuCommand(item.id); event.currentTarget.closest("details")?.removeAttribute("open"); }} disabled={item.disabled}><span>{item.label}</span>{item.shortcut && <small>{item.shortcut.replace("Ctrl", "⌘/Ctrl")}</small>}</button>)}</div></details>;
+  }
+
   return (
     <div className="app-shell" tabIndex={-1} onKeyDown={(event) => {
-      if (!(event.ctrlKey || event.metaKey)) return;
-      const key = event.key.toLowerCase();
-      if (key === "s") { event.preventDefault(); void saveProject(); }
-      if (key === "o") { event.preventDefault(); void openProject(); }
-      if (key === "i") { event.preventDefault(); void importMedia(); }
-      if (key === "n") { event.preventDefault(); if (projectState?.is_dirty) void ensureDiscardIsOkay().then((ok) => ok && setNewProjectOpen(true)); else setNewProjectOpen(true); }
-      if (key === "z" && event.shiftKey) { event.preventDefault(); void perform("edit.redo"); }
-      else if (key === "z") { event.preventDefault(); void perform("edit.undo"); }
+      const target = event.target;
+      if (target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) return;
+      if (!(event.ctrlKey || event.metaKey || event.altKey)) {
+        const tool = timelineTools.find((item) => item.shortcut.toLowerCase() === event.key.toLowerCase());
+        if (tool) { event.preventDefault(); setTimelineTool(tool.id); return; }
+        if (event.key.toLowerCase() === "s") { event.preventDefault(); setSnapEnabled((enabled) => !enabled); return; }
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "q") { event.preventDefault(); void getCurrentWindow().close(); return; }
+      if ((event.ctrlKey || event.metaKey) && event.key === "+") { event.preventDefault(); setTimelineZoom((zoom) => Math.min(240, zoom * 1.2)); return; }
+      if ((event.ctrlKey || event.metaKey) && event.key === "-") { event.preventDefault(); setTimelineZoom((zoom) => Math.max(24, zoom / 1.2)); return; }
+      if ((event.ctrlKey || event.metaKey) && event.key === "0") { event.preventDefault(); setTimelineZoom(72); return; }
+      const pressed = `${event.ctrlKey || event.metaKey ? "Ctrl+" : ""}${event.shiftKey ? "Shift+" : ""}${event.key.length === 1 ? event.key.toUpperCase() : event.key}`;
+      const command = commands.find((item) => item.shortcut?.toLowerCase() === pressed.toLowerCase());
+      if (!command) return;
+      event.preventDefault();
+      void invokeMenuCommand(command.id);
     }}>
       <header className="app-header">
-        <div className="brand"><img className="brand-mark" src="/saturn-camera.png" alt="Easy Edit Pro camera logo" /><div><strong>Easy Edit Pro</strong><small>{project?.name ?? "Loading project…"}{projectState?.is_dirty ? " •" : ""}</small></div></div>
-        <nav className="file-actions" aria-label="Project actions">
-          <button onClick={() => { void ensureDiscardIsOkay().then((ok) => { if (ok) { setNewProjectName("Untitled project"); setNewProjectOpen(true); } }); }}>New</button>
-          <button onClick={() => void openProject()}>Open</button>
-          <button onClick={() => void saveProject()}>Save</button>
-          <button onClick={() => void importMedia()} disabled={busy}>Import</button>
-          <button className="history-button" onClick={() => void perform("edit.undo")} disabled={!undoStatus.enabled} title={undoStatus.reason ?? "Undo"}><Icon name="undo" /></button>
-          <button className="history-button" onClick={() => void perform("edit.redo")} disabled={!redoStatus.enabled} title={redoStatus.reason ?? "Redo"}><Icon name="redo" /></button>
-        </nav>
-        <nav className="workspaces" aria-label="Editing workspaces">
-          {workspaces.map((item) => <button key={item.id} className={`workspace ${workspace === item.id ? "active" : ""}`} aria-pressed={workspace === item.id} onClick={() => setWorkspace(item.id)}>{item.label}</button>)}
-        </nav>
-        <div className="header-actions">
-          <button className="icon-button" onClick={() => void toggleFullscreen()} aria-label={fullscreen ? "Leave fullscreen" : "Enter fullscreen"} title={fullscreen ? "Leave fullscreen" : "Enter fullscreen"}><Icon name={fullscreen ? "restore" : "fullscreen"} /></button>
-          <button className="icon-button close" onClick={() => void getCurrentWindow().close()} aria-label="Close Easy Edit Pro" title="Close"><Icon name="close" /></button>
+        <div className="header-menu-row">
+          <div className="brand"><img className="brand-mark" src="/saturn-camera.png" alt="Easy Edit Pro camera logo" /><div><strong>Easy Edit Pro</strong><small>{project?.name ?? "Loading project…"}{projectState?.is_dirty ? " •" : ""}</small></div></div>
+          <nav className="menu-bar" aria-label="Application menus">{["File", "Edit", "Clip", "Sequence", "Markers", "View", "Window", "Help"].map(renderMenu)}</nav>
+          <div className="header-actions">
+            <button className="icon-button" onClick={() => void toggleFullscreen()} aria-label={fullscreen ? "Leave fullscreen" : "Enter fullscreen"} title={fullscreen ? "Leave fullscreen" : "Enter fullscreen"}><Icon name={fullscreen ? "restore" : "fullscreen"} /></button>
+            <button className="icon-button close" onClick={() => void getCurrentWindow().close()} aria-label="Close Easy Edit Pro" title="Close"><Icon name="close" /></button>
+          </div>
+        </div>
+        <div className="app-toolbar">
+          <nav className="file-actions" aria-label="Project actions">
+            <button onClick={() => { void ensureDiscardIsOkay().then((ok) => { if (ok) { setNewProjectName("Untitled project"); setNewProjectOpen(true); } }); }}>New</button>
+            <button onClick={() => void openProject()}>Open</button>
+            <button onClick={() => void saveProject()}>Save</button>
+            <button onClick={() => void importMedia()} disabled={busy}>Import</button>
+            <span className="action-divider" />
+            <button className="history-button" onClick={() => void perform("edit.undo")} disabled={!undoStatus.enabled} title={undoStatus.reason ?? "Undo"} aria-label="Undo"><Icon name="undo" /></button>
+            <button className="history-button" onClick={() => void perform("edit.redo")} disabled={!redoStatus.enabled} title={redoStatus.reason ?? "Redo"} aria-label="Redo"><Icon name="redo" /></button>
+          </nav>
+          <nav className="workspaces" aria-label="Editing workspaces">
+            {workspaces.map((item) => <button key={item.id} className={`workspace ${workspace === item.id ? "active" : ""}`} aria-pressed={workspace === item.id} onClick={() => setWorkspace(item.id)}>{item.label}</button>)}
+          </nav>
         </div>
       </header>
 
@@ -554,7 +784,7 @@ function App() {
           <div className="panel-tabs"><span className="selected">Project</span><span>Media Browser</span><span>Libraries</span></div>
           <div className="panel-heading"><strong>Project media</strong><button className="primary" onClick={() => void importMedia()} disabled={busy}>＋ Import media</button></div>
           <input className="search" type="search" placeholder="Search project media" aria-label="Search project media" value={search} onChange={(event) => setSearch(event.target.value)} />
-          {visibleMedia.length > 0 ? <div className="media-list">{visibleMedia.map((item) => <button className={`media-item ${selectedMediaId === item.id ? "selected" : ""}`} key={item.id} onClick={() => { setSelectedMediaId(item.id); setSelectedClip(null); }}><Icon name="media" /><span><strong>{item.name}</strong><small>{item.kind} · {item.width && item.height ? `${item.width} × ${item.height}` : item.path}</small></span></button>)}</div> : <div className="empty-media"><span className="media-icon"><Icon name="media" /></span><strong>{search ? "No matching media" : "No media imported"}</strong><small>{search ? "Try another search." : "Import video, audio, and images to begin."}</small></div>}
+          {visibleMedia.length > 0 ? <div className="media-list">{visibleMedia.map((item) => <div className="media-row" key={item.id}><button className={`media-item ${selectedMediaId === item.id ? "selected" : ""}`} onClick={() => { setSelectedMediaId(item.id); setSelectedClip(null); setSelectedClips([]); }}><Icon name="media" /><span><strong>{item.name}</strong><small>{missingMediaIds.has(item.id) ? "Missing · relink required" : `${item.kind} · ${item.width && item.height ? `${item.width} × ${item.height}` : item.path}`}</small></span></button>{missingMediaIds.has(item.id) && <button className="relink-button" onClick={() => void relinkMedia(item.id)} title={`Locate ${item.name}`}>Relink</button>}</div>)}</div> : <div className="empty-media"><span className="media-icon"><Icon name="media" /></span><strong>{search ? "No matching media" : "No media imported"}</strong><small>{search ? "Try another search." : "Import video, audio, and images to begin."}</small></div>}
         </aside>
 
         <section className="work-area">
@@ -564,21 +794,46 @@ function App() {
           </div>
 
           <section className="timeline">
-            <div className="timeline-toolbar"><strong>Timeline</strong><span>{project?.name ?? "Loading project…"}</span><button className="primary" disabled={!selectedMedia || busy} onClick={() => void addSelectedToTimeline()}><Icon name="add" /> Add selected</button><button disabled={!selectedClip || busy} onClick={() => void removeSelectedClip()}>Remove clip</button></div>
-            <div className="timeline-scroller">
-              <div className="timeline-content" style={{ width: `${timelineWidth}px` }}>
-                <div className="timeline-ruler"><span className="track-spacer">Time</span><div className="ruler-lane">{Array.from({ length: 16 }, (_, index) => <span key={index}>{formatTime(index * TICKS_PER_SECOND * 5)}</span>)}</div></div>
-                {(project?.sequence.tracks ?? []).map((track) => <div className="track-row" key={track.id}>
-                  <div className="track-label"><b>{track.name}</b><span>{track.kind}</span></div>
-                  <div className="track-lane" onDragOver={(event) => event.preventDefault()} onDrop={(event) => void handleClipDrop(event, track.id)}>
-                    {track.clips.map((clip, index) => {
-                      const item = media.find((entry) => entry.id === clip.media_id);
-                      const selected = selectedClip?.track_id === track.id && selectedClip.clip_index === index;
-                      return <div className={`timeline-clip ${selected ? "selected" : ""} ${track.kind}`} key={`${track.id}-${clip.media_id}-${index}-${clip.timeline_start}`} style={{ left: `${clip.timeline_start / TICKS_PER_SECOND * PIXELS_PER_SECOND}px`, width: `${Math.max(34, clip.duration / TICKS_PER_SECOND * PIXELS_PER_SECOND)}px` }} draggable onDragStart={(event) => event.dataTransfer.setData("application/x-saturn-clip", JSON.stringify({ track_id: track.id, clip_index: index }))} onClick={() => { setSelectedClip({ track_id: track.id, clip_index: index }); setPlayhead(clip.timeline_start); }} title={`${item?.name ?? "Clip"} · drag to move`}><strong>{item?.name ?? "Missing media"}</strong></div>;
-                    })}
-                    <div className="playhead" style={{ left: `${playhead / TICKS_PER_SECOND * PIXELS_PER_SECOND}px` }} />
-                  </div>
-                </div>)}
+            <aside className="timeline-tool-rail" aria-label="Timeline tools">
+              {timelineTools.map((tool) => <button key={tool.id} className={`timeline-tool-button ${timelineTool === tool.id ? "active" : ""}`} onClick={() => setTimelineTool(tool.id)} aria-label={tool.label} aria-pressed={timelineTool === tool.id} title={`${tool.label} (${tool.shortcut})`}><Icon name={tool.icon} /></button>)}
+            </aside>
+            <div className="timeline-workbench">
+              <div className="timeline-toolbar">
+                <div className="timeline-toolbar-start"><strong>Timeline</strong><code>{formatTime(playhead)} / {formatTime(Math.max(0, ...((project?.sequence.tracks ?? []).flatMap((track) => track.clips.map((clip) => clip.timeline_start + clip.duration)))))}</code></div>
+                <div className="timeline-toolbar-tools" aria-label="Timeline actions">
+                  <button className={`timeline-icon-button ${snapEnabled ? "active-toggle" : ""}`} aria-pressed={snapEnabled} onClick={() => setSnapEnabled((enabled) => !enabled)} title={`Snap to frame (${snapEnabled ? "on" : "off"}) · S`} aria-label="Toggle snapping"><Icon name="snap" /></button>
+                  <button className="timeline-icon-button" disabled={!selectedMedia || busy} onClick={() => void addSelectedToTimeline()} title="Add selected media to timeline" aria-label="Add selected media"><Icon name="add" /></button>
+                  <span className="toolbar-divider" />
+                  <button className="timeline-icon-button" disabled={!undoStatus.enabled || busy} onClick={() => void perform("edit.undo")} title={undoStatus.reason ?? "Undo"} aria-label="Undo"><Icon name="undo" /></button>
+                  <button className="timeline-icon-button" disabled={!redoStatus.enabled || busy} onClick={() => void perform("edit.redo")} title={redoStatus.reason ?? "Redo"} aria-label="Redo"><Icon name="redo" /></button>
+                  <span className="toolbar-divider" />
+                  <button className="timeline-icon-button" disabled={!selectedClip || busy} onClick={() => void splitSelectedClip()} title="Split selected clip at playhead" aria-label="Split clip"><Icon name="split" /></button>
+                  <button className="timeline-icon-button" disabled={!selectedClip || busy} onClick={() => void rippleDeleteSelectedClip()} title="Ripple delete selected clip" aria-label="Ripple delete"><Icon name="ripple" /></button>
+                  <button className="timeline-icon-button" disabled={!selectedClip || busy} onClick={() => void removeSelectedClip()} title="Remove selected clip" aria-label="Remove clip"><Icon name="remove" /></button>
+                  <span className="toolbar-divider" />
+                  <button className="timeline-icon-button" disabled={busy} onClick={() => void invokeMenuCommand("timeline.set_mark_in")} title="Set In point · I" aria-label="Set In point"><Icon name="markIn" /></button>
+                  <button className="timeline-icon-button" disabled={busy} onClick={() => void invokeMenuCommand("timeline.set_mark_out")} title="Set Out point · O" aria-label="Set Out point"><Icon name="markOut" /></button>
+                  <button className="timeline-icon-button" disabled={project?.sequence.mark_in == null && project?.sequence.mark_out == null} onClick={() => void invokeMenuCommand("timeline.clear_marks")} title="Clear In/Out points" aria-label="Clear markers"><Icon name="clearMarks" /></button>
+                  <span className="toolbar-divider" />
+                  <button className="timeline-icon-button" onClick={() => setTimelineZoom((zoom) => Math.max(24, zoom / 1.2))} title="Zoom out" aria-label="Zoom out"><Icon name="zoomOut" /></button>
+                  <button className="timeline-icon-button" onClick={() => setTimelineZoom((zoom) => Math.min(240, zoom * 1.2))} title="Zoom in" aria-label="Zoom in"><Icon name="zoomIn" /></button>
+                </div>
+              </div>
+              <div className={`timeline-scroller ${timelineTool === "hand" ? "hand-mode" : ""}`} onPointerDown={handleTimelinePanStart} onPointerMove={handleTimelinePanMove} onPointerUp={handleTimelinePanEnd} onPointerCancel={handleTimelinePanEnd}>
+                <div className="timeline-content" style={{ width: `${timelineWidth}px` }}>
+                  <div className="timeline-ruler"><span className="track-spacer">Time</span><div className="ruler-lane" onClick={handleTimelineRulerClick}>{project?.sequence.mark_in != null && <i className="sequence-marker in-point" style={{ left: `${project.sequence.mark_in / TICKS_PER_SECOND * timelineZoom}px` }} title={`In · ${formatTime(project.sequence.mark_in)}`}><Icon name="markIn" /></i>}{project?.sequence.mark_out != null && <i className="sequence-marker out-point" style={{ left: `${project.sequence.mark_out / TICKS_PER_SECOND * timelineZoom}px` }} title={`Out · ${formatTime(project.sequence.mark_out)}`}><Icon name="markOut" /></i>}{Array.from({ length: Math.ceil(timelineWidth / (timelineZoom * 5)) + 1 }, (_, index) => <span key={index} style={{ left: `${index * timelineZoom * 5}px` }}>{formatTime(index * TICKS_PER_SECOND * 5)}</span>)}</div></div>
+                  {(project?.sequence.tracks ?? []).map((track) => <div className="track-row" key={track.id}>
+                    <div className="track-label"><b>{track.name}</b><span>{track.kind}</span></div>
+                    <div className="track-lane" onDragOver={(event) => event.preventDefault()} onDrop={(event) => void handleClipDrop(event, track.id)}>
+                      {track.clips.map((clip, index) => {
+                        const item = media.find((entry) => entry.id === clip.media_id);
+                        const selected = (selectedClip?.track_id === track.id && selectedClip.clip_index === index) || selectedClips.some((item) => item.track_id === track.id && item.clip_index === index);
+                        return <div className={`timeline-clip ${selected ? "selected" : ""} ${track.kind} tool-${timelineTool}`} key={`${track.id}-${clip.media_id}-${index}-${clip.timeline_start}`} style={{ left: `${clip.timeline_start / TICKS_PER_SECOND * timelineZoom}px`, width: `${Math.max(34, clip.duration / TICKS_PER_SECOND * timelineZoom)}px` }} draggable={timelineTool === "select"} onDragStart={(event) => event.dataTransfer.setData("application/x-saturn-clip", JSON.stringify({ track_id: track.id, clip_index: index }))} onPointerDown={(event) => beginSlip(event, track.id, index)} onPointerUp={(event) => void finishSlip(event)} onClick={(event) => void handleTimelineClipClick(event, track.id, index, clip)} title={`${item?.name ?? "Clip"} · ${timelineTools.find((tool) => tool.id === timelineTool)?.label}`}><strong>{item?.name ?? "Missing media"}</strong></div>;
+                      })}
+                      <div className="playhead" style={{ left: `${playhead / TICKS_PER_SECOND * timelineZoom}px` }} />
+                    </div>
+                  </div>)}
+                </div>
               </div>
             </div>
           </section>
@@ -586,7 +841,7 @@ function App() {
 
         <aside className="tool-panel" aria-live="polite">{renderInspector()}</aside>
       </main>
-      <footer className="status-bar"><span>{busy ? "Working…" : notice || "Easy Edit Pro · React + TypeScript"}</span><span>{connection}</span></footer>
+      <footer className="status-bar"><span>{busy ? "Working…" : notice || "Autosave recovery enabled · saves every 30 seconds"}</span><span>{connection}</span></footer>
       {newProjectOpen && <div className="dialog-backdrop" role="presentation"><form className="new-project-dialog" onSubmit={(event) => { event.preventDefault(); void createProject(); }}><h2>New project</h2><label>Project name<input autoFocus value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} /></label><div className="dialog-actions"><button type="button" onClick={() => setNewProjectOpen(false)}>Cancel</button><button className="primary" type="submit" disabled={!newProjectName.trim()}>Create</button></div></form></div>}
     </div>
   );
