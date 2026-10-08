@@ -1,0 +1,201 @@
+* {
+  font-family: "Inter", "Cantarell", sans-serif;
+}
+
+window {
+  background: #111217;
+  color: #ececf1;
+}
+
+.app-root {
+  background: #111217;
+}
+
+.app-header {
+  background: #191a21;
+  border-bottom: 1px solid #292a33;
+}
+
+.brand-mark,
+.preview-mark {
+  color: #ff765e;
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+
+.brand-mark {
+  background: #29232a;
+  border: 1px solid #45313a;
+  border-radius: 9px;
+  padding: 8px;
+}
+
+.brand-title {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.section-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.muted-label {
+  color: #9395a1;
+  font-size: 11px;
+}
+
+.side-panel,
+.inspector-panel,
+.preview-panel,
+.editor-area {
+  background: #17181e;
+  border: 1px solid #292a33;
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.side-panel {
+  background: #191a20;
+}
+
+.editor-area {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+
+.preview-panel {
+  background: #191a20;
+}
+
+.preview-frame {
+  border: 1px solid #30313b;
+  border-radius: 8px;
+  background: #090a0e;
+}
+
+.preview-stage {
+  background: #090a0e;
+  border-radius: 8px;
+  min-height: 280px;
+}
+
+.preview-mark {
+  font-size: 30px;
+  opacity: 0.85;
+}
+
+.preview-message {
+  color: #d9d9e0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.empty-state,
+.inspector-empty {
+  padding: 18px;
+}
+
+.empty-icon {
+  color: #676a77;
+  font-size: 28px;
+}
+
+.empty-title {
+  color: #c5c6cf;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+button {
+  background: #25262e;
+  background-image: none;
+  border: 1px solid #383943;
+  border-radius: 7px;
+  color: #ebebf0;
+  padding: 7px 10px;
+}
+
+button:hover {
+  background: #30313b;
+}
+
+button:disabled {
+  color: #72747e;
+}
+
+.quiet-button {
+  background: #202129;
+}
+
+.accent-button {
+  background: #dc634f;
+  border-color: #e5745f;
+  color: #fff8f6;
+  font-weight: 700;
+}
+
+.accent-button:hover {
+  background: #eb715b;
+}
+
+.transport-bar {
+  padding: 2px 0;
+}
+
+.transport-button,
+.play-button {
+  min-width: 36px;
+  min-height: 32px;
+  padding: 4px 8px;
+}
+
+.play-button {
+  background: #2b252a;
+  border-color: #62403b;
+  color: #ff957f;
+}
+
+.timecode {
+  color: #d9d9e0;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+.timeline-panel {
+  background: #191a20;
+  border: 1px solid #292a33;
+  border-radius: 10px;
+  padding: 10px 12px 12px;
+}
+
+.timeline-ruler-row {
+  margin-top: 3px;
+}
+
+.track-label {
+  background: #202129;
+  border-bottom: 1px solid #30313a;
+  padding: 0 8px;
+}
+
+.track-badge {
+  background: #30313b;
+  border-radius: 5px;
+  color: #c9cad3;
+  font-size: 10px;
+  font-weight: 700;
+  min-width: 26px;
+  padding: 4px;
+}
+
+.track-name {
+  color: #c1c2cb;
+  font-size: 11px;
+}
+
+.status-bar {
+  background: #191a20;
+  border-top: 1px solid #292a33;
+}
