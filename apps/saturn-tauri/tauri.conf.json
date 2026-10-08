@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Project Saturn",
+  "productName": "Easy Edit Pro",
   "version": "0.1.0",
   "identifier": "com.zvirox.ProjectSaturn",
   "build": {
@@ -10,9 +10,15 @@
     "frontendDist": "ui/dist"
   },
   "app": {
+    "security": {
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
+    },
     "windows": [
       {
-        "title": "Project Saturn",
+        "title": "Easy Edit Pro",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
@@ -22,7 +28,38 @@
     ]
   },
   "bundle": {
-    "active": false,
-    "icon": ["../../assets/icons/saturn-camera.png"]
+    "active": true,
+    "targets": ["deb", "rpm"],
+    "category": "Video",
+    "shortDescription": "Open source video editor for Linux",
+    "longDescription": "Easy Edit Pro is an open source desktop video editor built with Rust, Tauri, and GStreamer.",
+    "licenseFile": "../../LICENSE",
+    "icon": ["../../assets/icons/saturn-camera.png"],
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libgstreamer1.0-0",
+          "libgstreamer-plugins-base1.0-0",
+          "libges-1.0-0",
+          "gstreamer1.0-plugins-good",
+          "gstreamer1.0-plugins-ugly",
+          "gstreamer1.0-libav"
+        ]
+      },
+      "rpm": {
+        "depends": [
+          "webkit2gtk4.1",
+          "gtk3",
+          "gstreamer1",
+          "gstreamer1-plugins-base",
+          "gstreamer1-plugins-good",
+          "gstreamer1-plugins-ugly",
+          "gstreamer1-libav",
+          "gstreamer1-editing-services"
+        ]
+      }
+    }
   }
 }

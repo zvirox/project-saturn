@@ -1,0 +1,13 @@
+[package]
+name = "saturn-render"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "GPL-3.0-only"
+description = "Native timeline rendering for Project Saturn using GStreamer Editing Services"
+
+[dependencies]
+gstreamer = "0.25.3"
+gstreamer-editing-services = { version = "0.25.4", features = ["v1_18"] }
+gstreamer-pbutils = "0.25.3"
+saturn-core = { path = "../saturn-core" }

@@ -16,7 +16,7 @@ fn main() {
     app.connect_activate(|app| {
         let window = gtk::ApplicationWindow::builder()
             .application(app)
-            .title("Project Saturn")
+            .title("Easy Edit Pro")
             .icon_name("saturn-camera")
             .default_width(1280)
             .default_height(800)

@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=Project Saturn
+Name=Easy Edit Pro
 Comment=Open-source Linux video editor
-Exec=project-saturn
-TryExec=project-saturn
+Exec=easy-edit-pro
+TryExec=easy-edit-pro
 Icon=saturn-camera
 Terminal=false
 Categories=AudioVideo;Video;AudioVideoEditing;

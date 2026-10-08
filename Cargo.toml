@@ -7,7 +7,7 @@ description = "A native Linux video editor in development"
 license = "GPL-3.0-only"
 
 [workspace]
-members = ["crates/saturn-core", "crates/saturn-cli"]
+members = ["crates/saturn-core", "crates/saturn-cli", "crates/saturn-render"]
 resolver = "3"
 
 [dependencies]

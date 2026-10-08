@@ -445,6 +445,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "gstreamer-editing-services"
+version = "0.25.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21200a321474e4f973fb7fba6e4358e37d54968600f883231b0ae10499f73d91"
+dependencies = [
+ "gio",
+ "glib",
+ "gstreamer",
+ "gstreamer-base",
+ "gstreamer-editing-services-sys",
+ "gstreamer-pbutils",
+ "libc",
+]
+
+[[package]]
+name = "gstreamer-editing-services-sys"
+version = "0.25.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe9257a948d1b97a77d19bbd3f05e256ca14c30eaf7372b9e48b0746f9765e51"
+dependencies = [
+ "gio-sys",
+ "glib-sys",
+ "gobject-sys",
+ "gstreamer-pbutils-sys",
+ "gstreamer-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
 name = "gstreamer-pbutils"
 version = "0.25.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -813,6 +843,16 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "saturn-render"
+version = "0.1.0"
+dependencies = [
+ "gstreamer",
+ "gstreamer-editing-services",
+ "gstreamer-pbutils",
+ "saturn-core",
 ]
 
 [[package]]

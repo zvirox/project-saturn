@@ -91,7 +91,7 @@ fn build_header(
     header.append(&mark);
 
     let title_group = GtkBox::new(Orientation::Vertical, 1);
-    let title = Label::new(Some("Project Saturn"));
+    let title = Label::new(Some("Easy Edit Pro"));
     title.add_css_class("brand-title");
     title.set_xalign(0.0);
     let subtitle = Label::new(Some("Untitled project"));
@@ -170,15 +170,15 @@ fn build_header(
     let close_button = Button::from_icon_name("window-close-symbolic");
     close_button.add_css_class("window-control-button");
     close_button.add_css_class("close-window-button");
-    close_button.set_tooltip_text(Some("Close Project Saturn"));
-    close_button.update_property(&[gtk::accessible::Property::Label("Close Project Saturn")]);
+    close_button.set_tooltip_text(Some("Close Easy Edit Pro"));
+    close_button.update_property(&[gtk::accessible::Property::Label("Close Easy Edit Pro")]);
     let window_for_close = window.clone();
     let engine_for_close = engine.clone();
     close_button.connect_clicked(move |_| {
         let close_window = window_for_close.clone();
         let close = move || close_window.close();
         if engine_for_close.borrow().is_dirty() {
-            confirm_discard(&window_for_close, "Close Project Saturn?", close);
+            confirm_discard(&window_for_close, "Close Easy Edit Pro?", close);
         } else {
             close();
         }
@@ -244,9 +244,9 @@ fn build_menu_bar(
     view.append(Some("Reset Workspace Layout"), Some("win.reset-layout"));
 
     let help = gtk::gio::Menu::new();
-    help.append(Some("Project Saturn User Guide"), Some("win.user-guide"));
+    help.append(Some("Easy Edit Pro User Guide"), Some("win.user-guide"));
     help.append(Some("Report an Issue"), Some("win.report-issue"));
-    help.append(Some("About Project Saturn"), Some("win.about"));
+    help.append(Some("About Easy Edit Pro"), Some("win.about"));
 
     for (title, menu) in [
         ("File", file),
@@ -343,10 +343,10 @@ fn add_project_actions(
     let window_for_open = window.clone();
     open_action.connect_activate(move |_, _| {
         let dialog = FileDialog::builder()
-            .title("Open Project Saturn project")
+            .title("Open Easy Edit Pro project")
             .build();
         let filter = FileFilter::new();
-        filter.set_name(Some("Project Saturn projects"));
+        filter.set_name(Some("Easy Edit Pro projects"));
         filter.add_pattern("*.saturn");
         let filters = gtk::gio::ListStore::new::<FileFilter>();
         filters.append(&filter);
@@ -369,7 +369,7 @@ fn add_project_actions(
                 let Some(path) = file.path() else {
                     show_error(
                         &window,
-                        "Project Saturn can currently open local project files only.",
+                        "Easy Edit Pro can currently open local project files only.",
                     );
                     return;
                 };
@@ -459,11 +459,11 @@ fn confirm_discard(parent: &ApplicationWindow, message: &str, on_discard: impl F
 
 fn show_save_dialog(parent: &ApplicationWindow, engine: &Rc<RefCell<EditorEngine>>) {
     let dialog = FileDialog::builder()
-        .title("Save Project Saturn project")
+        .title("Save Easy Edit Pro project")
         .build();
     dialog.set_initial_name(Some("Untitled.saturn"));
     let filter = FileFilter::new();
-    filter.set_name(Some("Project Saturn project (*.saturn)"));
+    filter.set_name(Some("Easy Edit Pro project (*.saturn)"));
     filter.add_pattern("*.saturn");
     let filters = gtk::gio::ListStore::new::<FileFilter>();
     filters.append(&filter);
@@ -489,7 +489,7 @@ fn show_save_dialog(parent: &ApplicationWindow, engine: &Rc<RefCell<EditorEngine
             let Some(mut path) = file.path() else {
                 show_error(
                     &parent_for_result,
-                    "Project Saturn can currently save to local files only.",
+                    "Easy Edit Pro can currently save to local files only.",
                 );
                 return;
             };
@@ -546,7 +546,7 @@ fn refresh_history_actions(window: &ApplicationWindow, engine: &Rc<RefCell<Edito
 
 fn show_error(parent: &ApplicationWindow, message: &str) {
     let dialog = gtk::AlertDialog::builder()
-        .message("Project Saturn")
+        .message("Easy Edit Pro")
         .detail(message)
         .buttons(["OK"])
         .build();
@@ -555,7 +555,7 @@ fn show_error(parent: &ApplicationWindow, message: &str) {
 
 fn show_about_window(parent: &ApplicationWindow) {
     let about = gtk::Window::builder()
-        .title("About Project Saturn")
+        .title("About Easy Edit Pro")
         .transient_for(parent)
         .modal(true)
         .default_width(360)
@@ -571,17 +571,12 @@ fn show_about_window(parent: &ApplicationWindow) {
     logo.set_halign(gtk::Align::Center);
     content.append(&logo);
 
-    let title = Label::new(Some("Project Saturn"));
+    let title = Label::new(Some("Easy Edit Pro"));
     title.add_css_class("about-title");
     content.append(&title);
     let version = Label::new(Some("Open-source Linux video editor · v0.1.0"));
     version.add_css_class("muted-label");
     content.append(&version);
-    let brand = Label::new(Some("Planned stable release name: Zvirox’s Filmona"));
-    brand.add_css_class("muted-label");
-    brand.set_wrap(true);
-    content.append(&brand);
-
     let close = Button::with_label("Close");
     close.set_halign(gtk::Align::End);
     let about_for_close = about.clone();
@@ -594,7 +589,7 @@ fn show_about_window(parent: &ApplicationWindow) {
 fn app_logo(size: i32) -> gtk::Picture {
     let bytes = gtk::glib::Bytes::from_static(include_bytes!("../assets/icons/saturn-camera.png"));
     let texture = gtk::gdk::Texture::from_bytes(&bytes)
-        .expect("Bundled Saturn camera logo should be a valid image");
+        .expect("Bundled Easy Edit Pro logo should be a valid image");
     let picture = gtk::Picture::for_paintable(&texture);
     picture.set_content_fit(gtk::ContentFit::Contain);
     picture.set_size_request(size, size);
@@ -987,7 +982,7 @@ fn build_media_panel(
     let engine_for_import = engine.clone();
     import_button.connect_clicked(move |_| {
         let dialog = FileDialog::builder()
-            .title("Import media into Project Saturn")
+            .title("Import media into Easy Edit Pro")
             .build();
 
         let all_media = FileFilter::new();
@@ -1833,7 +1828,7 @@ fn build_status_bar() -> GtkBox {
     spacer.set_hexpand(true);
     bar.append(&spacer);
 
-    let version = Label::new(Some("Project Saturn  ·  v0.1.0-dev"));
+    let version = Label::new(Some("Easy Edit Pro  ·  v0.1.0-dev"));
     version.add_css_class("muted-label");
     bar.append(&version);
     bar

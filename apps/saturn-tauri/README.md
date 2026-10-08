@@ -1,6 +1,6 @@
-# Project Saturn · Tauri app
+# Easy Edit Pro · Tauri app
 
-This Tauri 2 desktop target uses React, TypeScript, and Vite for the editor UI. Its Rust command bridge reuses the GTK-independent `saturn-core`; the existing GTK app remains available while Saturn's media and timeline workflows are migrated.
+This Tauri 2 desktop target uses React, TypeScript, and Vite for the editor UI. Its Rust command bridge reuses the GTK-independent `saturn-core`; the existing GTK app remains available during migration.
 
 ## Development
 
@@ -19,4 +19,11 @@ Build the frontend assets and type-check them with:
 pnpm build
 ```
 
-The current UI loads project details from `saturn-core`, supports workspace switching and media search, and includes fullscreen and close controls. Media import, playback, timeline editing, rendering, and package bundling still need migration work.
+The UI supports New/Open/Save project workflows, native multi-file import, GStreamer metadata discovery, a searchable media bin, source and program previews, timeline clip add/move/remove, fullscreen and close, and Rust-backed undo/redo. Color controls, per-track gain, and clip keyframes persist in schema-versioned project files and affect the webview program preview. Native rendering/export, full audio mixing, asset-provider APIs, AI features, and Linux release packages remain future work.
+
+Run Rust core workflow tests and build the Tauri UI with:
+
+```sh
+cargo test -p saturn-core
+pnpm build
+```

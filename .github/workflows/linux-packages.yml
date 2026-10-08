@@ -1,0 +1,47 @@
+name: Linux packages
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  packages:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: apps/saturn-tauri/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/saturn-tauri -> target
+      - name: Install desktop and media build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl file librsvg2-dev libayatana-appindicator3-dev \
+            libwebkit2gtk-4.1-dev libxdo-dev libssl-dev pkg-config rpm \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libgstreamer-plugins-bad1.0-dev libges-1.0-dev \
+            gstreamer1.0-tools gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-ugly gstreamer1.0-libav
+      - name: Enable pnpm
+        run: corepack enable && corepack prepare pnpm@latest --activate
+      - name: Install frontend dependencies
+        working-directory: apps/saturn-tauri
+        run: pnpm install --frozen-lockfile
+      - name: Build Debian and RPM packages
+        working-directory: apps/saturn-tauri
+        run: pnpm tauri build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: project-saturn-linux-packages
+          path: |
+            apps/saturn-tauri/target/release/bundle/deb/*.deb
+            apps/saturn-tauri/target/release/bundle/rpm/*.rpm
+          if-no-files-found: error

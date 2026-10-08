@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const PROJECT_FORMAT: &str = "project-saturn.project";
-pub const PROJECT_SCHEMA_VERSION: u32 = 2;
+pub const PROJECT_SCHEMA_VERSION: u32 = 3;
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -72,6 +72,8 @@ pub struct Track {
     pub id: u64,
     pub kind: TrackKind,
     pub name: String,
+    #[serde(default)]
+    pub gain_db: f64,
     pub clips: Vec<Clip>,
 }
 
@@ -88,6 +90,46 @@ pub struct Clip {
     pub timeline_start: Tick,
     pub source_in: Tick,
     pub duration: Tick,
+    #[serde(default)]
+    pub color: ColorAdjustments,
+    #[serde(default)]
+    pub keyframes: Vec<Keyframe>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ColorAdjustments {
+    pub exposure: f64,
+    pub contrast: f64,
+    pub saturation: f64,
+}
+
+impl Default for ColorAdjustments {
+    fn default() -> Self {
+        Self {
+            exposure: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyframeProperty {
+    PositionX,
+    PositionY,
+    Scale,
+    Rotation,
+    Opacity,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Keyframe {
+    pub property: KeyframeProperty,
+    /// Time relative to the clip's source in point.
+    pub time: Tick,
+    pub value: f64,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -128,12 +170,14 @@ impl ProjectDocument {
                             id: 1,
                             kind: TrackKind::Video,
                             name: "V1".into(),
+                            gain_db: 0.0,
                             clips: Vec::new(),
                         },
                         Track {
                             id: 2,
                             kind: TrackKind::Audio,
                             name: "A1".into(),
+                            gain_db: 0.0,
                             clips: Vec::new(),
                         },
                     ],
@@ -167,6 +211,42 @@ impl ProjectDocument {
         for item in &self.project.media {
             if !ids.insert(item.id) {
                 return Err(format!("Duplicate media id {}", item.id));
+            }
+        }
+        for track in &self.project.sequence.tracks {
+            if !track.gain_db.is_finite() || !(-60.0..=12.0).contains(&track.gain_db) {
+                return Err(format!("Track {} has invalid gain", track.name));
+            }
+            for clip in &track.clips {
+                if clip.duration.0 <= 0
+                    || !clip.color.exposure.is_finite()
+                    || !(-5.0..=5.0).contains(&clip.color.exposure)
+                    || !clip.color.contrast.is_finite()
+                    || !(0.0..=2.0).contains(&clip.color.contrast)
+                    || !clip.color.saturation.is_finite()
+                    || !(0.0..=2.0).contains(&clip.color.saturation)
+                {
+                    return Err("Project contains invalid clip properties".into());
+                }
+                for keyframe in &clip.keyframes {
+                    let value_in_range = match &keyframe.property {
+                        KeyframeProperty::PositionX | KeyframeProperty::PositionY => {
+                            (-100_000.0..=100_000.0).contains(&keyframe.value)
+                        }
+                        KeyframeProperty::Scale => (0.01..=100.0).contains(&keyframe.value),
+                        KeyframeProperty::Rotation => {
+                            (-36_000.0..=36_000.0).contains(&keyframe.value)
+                        }
+                        KeyframeProperty::Opacity => (0.0..=1.0).contains(&keyframe.value),
+                    };
+                    if keyframe.time.0 < 0
+                        || keyframe.time.0 > clip.duration.0
+                        || !keyframe.value.is_finite()
+                        || !value_in_range
+                    {
+                        return Err("Project contains an invalid keyframe".into());
+                    }
+                }
             }
         }
         Ok(())
@@ -247,7 +327,7 @@ fn migrate_project(value: &mut serde_json::Value) -> Result<(), String> {
             let object = value
                 .as_object_mut()
                 .ok_or_else(|| "Project root must be an object".to_string())?;
-            object.insert("schema_version".into(), PROJECT_SCHEMA_VERSION.into());
+            object.insert("schema_version".into(), 2.into());
             object.entry("view").or_insert_with(|| {
                 serde_json::json!({
                     "active_sequence": "Sequence 1",
@@ -255,6 +335,13 @@ fn migrate_project(value: &mut serde_json::Value) -> Result<(), String> {
                     "timeline_scroll": 0.0
                 })
             });
+            migrate_project(value)
+        }
+        2 => {
+            value
+                .as_object_mut()
+                .ok_or_else(|| "Project root must be an object".to_string())?
+                .insert("schema_version".into(), PROJECT_SCHEMA_VERSION.into());
             Ok(())
         }
         unsupported => Err(format!(
@@ -276,6 +363,29 @@ mod tests {
         let loaded: ProjectDocument = serde_json::from_value(legacy).unwrap();
         assert_eq!(loaded.schema_version, PROJECT_SCHEMA_VERSION);
         assert_eq!(loaded.view.active_sequence.as_deref(), Some("Sequence 1"));
+    }
+
+    #[test]
+    fn v2_project_migrates_with_default_edit_properties() {
+        let mut legacy = serde_json::to_value(ProjectDocument::new("V2 project")).unwrap();
+        legacy["schema_version"] = 2.into();
+        for track in legacy["project"]["sequence"]["tracks"]
+            .as_array_mut()
+            .unwrap()
+        {
+            track.as_object_mut().unwrap().remove("gain_db");
+        }
+        legacy["project"]["sequence"]["tracks"][0]["clips"] = serde_json::json!([
+            {"media_id": 3, "timeline_start": 0, "source_in": 0, "duration": 100}
+        ]);
+        migrate_project(&mut legacy).unwrap();
+        let loaded: ProjectDocument = serde_json::from_value(legacy).unwrap();
+        assert_eq!(loaded.schema_version, PROJECT_SCHEMA_VERSION);
+        assert_eq!(loaded.project.sequence.tracks[0].gain_db, 0.0);
+        let clip = &loaded.project.sequence.tracks[0].clips[0];
+        assert_eq!(clip.color.exposure, 0.0);
+        assert_eq!(clip.color.contrast, 1.0);
+        assert!(clip.keyframes.is_empty());
     }
 
     #[test]
