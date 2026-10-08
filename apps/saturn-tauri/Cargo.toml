@@ -1,0 +1,16 @@
+[package]
+name = "saturn-tauri"
+version = "0.1.0"
+edition = "2024"
+build = "build.rs"
+license = "GPL-3.0-only"
+
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+saturn-core = { path = "../../crates/saturn-core" }
+serde_json = "1"
+tauri = { version = "2", features = [] }

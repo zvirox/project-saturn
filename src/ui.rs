@@ -40,13 +40,19 @@ pub fn build(window: &ApplicationWindow) {
         source_monitor.clone(),
         engine.clone(),
     );
-    root.append(&build_header(window, engine.clone(), media_state));
+    let (editor_area, workspace_stack) = build_editor_area(inspector, source_monitor);
+    root.append(&build_header(
+        window,
+        engine.clone(),
+        media_state,
+        workspace_stack,
+    ));
 
     let workspace = Paned::new(Orientation::Horizontal);
     workspace.set_wide_handle(true);
     workspace.set_position(278);
     workspace.set_start_child(Some(&media_panel));
-    workspace.set_end_child(Some(&build_editor_area(inspector, source_monitor)));
+    workspace.set_end_child(Some(&editor_area));
     workspace.set_vexpand(true);
     root.append(&workspace);
 
@@ -71,6 +77,7 @@ fn build_header(
     window: &ApplicationWindow,
     engine: Rc<RefCell<EditorEngine>>,
     media_state: MediaPanelState,
+    workspace_stack: gtk::Stack,
 ) -> GtkBox {
     let header = GtkBox::new(Orientation::Horizontal, 12);
     header.add_css_class("app-header");
@@ -79,8 +86,8 @@ fn build_header(
     header.set_margin_top(8);
     header.set_margin_bottom(8);
 
-    let mark = Label::new(Some("PS"));
-    mark.add_css_class("brand-mark");
+    let mark = app_logo(34);
+    mark.add_css_class("brand-logo");
     header.append(&mark);
 
     let title_group = GtkBox::new(Orientation::Vertical, 1);
@@ -102,38 +109,94 @@ fn build_header(
     import_workspace.set_tooltip_text(Some("Import media into the project"));
     workspaces.append(&import_workspace);
 
-    let edit_workspace = Button::with_label("Edit");
-    edit_workspace.add_css_class("workspace-button");
-    edit_workspace.add_css_class("workspace-active");
-    edit_workspace.set_tooltip_text(Some("Editing workspace"));
-    edit_workspace.set_sensitive(false);
-    workspaces.append(&edit_workspace);
-
-    let export_workspace = Button::with_label("Export");
-    export_workspace.add_css_class("workspace-button");
-    export_workspace.set_sensitive(false);
-    export_workspace.set_tooltip_text(Some("Export becomes available with the render pipeline"));
-    workspaces.append(&export_workspace);
+    let modes = [
+        ("Edit", "edit", "Arrange clips and refine the sequence"),
+        ("Color", "color", "Color correction and grading tools"),
+        ("Audio", "audio", "Audio mixing and track controls"),
+        ("Keyframes", "keyframes", "Animated clip properties"),
+        ("Export", "export", "Output format and render settings"),
+    ];
+    let mode_buttons = Rc::new(RefCell::new(Vec::<Button>::new()));
+    for (label, page, tooltip) in modes {
+        let button = Button::with_label(label);
+        button.add_css_class("workspace-button");
+        if page == "edit" {
+            button.add_css_class("workspace-active");
+        }
+        button.set_tooltip_text(Some(tooltip));
+        let stack_for_mode = workspace_stack.clone();
+        let buttons_for_mode = mode_buttons.clone();
+        button.connect_clicked(move |selected| {
+            stack_for_mode.set_visible_child_name(page);
+            for candidate in buttons_for_mode.borrow().iter() {
+                candidate.remove_css_class("workspace-active");
+            }
+            selected.add_css_class("workspace-active");
+        });
+        mode_buttons.borrow_mut().push(button.clone());
+        workspaces.append(&button);
+    }
     header.append(&workspaces);
 
     let spacer = GtkBox::new(Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
     header.append(&spacer);
 
-    header.append(&build_menu_bar(window, engine, media_state));
+    header.append(&build_menu_bar(window, engine.clone(), media_state));
 
     let project_button = Button::with_label("Project settings");
     project_button.add_css_class("settings-button");
     project_button.set_tooltip_text(Some("Project settings will be added in a later milestone"));
     header.append(&project_button);
 
-    let export_button = Button::with_label("Export");
-    export_button.add_css_class("accent-button");
-    export_button.set_sensitive(false);
-    export_button.set_tooltip_text(Some("Export arrives after the editing and render pipeline"));
-    header.append(&export_button);
+    let fullscreen_button = Button::from_icon_name("view-fullscreen-symbolic");
+    fullscreen_button.add_css_class("window-control-button");
+    fullscreen_button.set_tooltip_text(Some("Enter fullscreen"));
+    fullscreen_button.update_property(&[gtk::accessible::Property::Label("Enter fullscreen")]);
+    let window_for_fullscreen = window.clone();
+    fullscreen_button.connect_clicked(move |_| {
+        if window_for_fullscreen.is_fullscreen() {
+            window_for_fullscreen.unfullscreen();
+        } else {
+            window_for_fullscreen.fullscreen();
+        }
+    });
+    let fullscreen_for_state = fullscreen_button.clone();
+    window.connect_fullscreened_notify(move |window| {
+        update_fullscreen_button(window, &fullscreen_for_state);
+    });
+    header.append(&fullscreen_button);
+
+    let close_button = Button::from_icon_name("window-close-symbolic");
+    close_button.add_css_class("window-control-button");
+    close_button.add_css_class("close-window-button");
+    close_button.set_tooltip_text(Some("Close Project Saturn"));
+    close_button.update_property(&[gtk::accessible::Property::Label("Close Project Saturn")]);
+    let window_for_close = window.clone();
+    let engine_for_close = engine.clone();
+    close_button.connect_clicked(move |_| {
+        let close_window = window_for_close.clone();
+        let close = move || close_window.close();
+        if engine_for_close.borrow().is_dirty() {
+            confirm_discard(&window_for_close, "Close Project Saturn?", close);
+        } else {
+            close();
+        }
+    });
+    header.append(&close_button);
 
     header
+}
+
+fn update_fullscreen_button(window: &ApplicationWindow, button: &Button) {
+    let (icon, label) = if window.is_fullscreen() {
+        ("view-restore-symbolic", "Leave fullscreen")
+    } else {
+        ("view-fullscreen-symbolic", "Enter fullscreen")
+    };
+    button.set_icon_name(icon);
+    button.set_tooltip_text(Some(label));
+    button.update_property(&[gtk::accessible::Property::Label(label)]);
 }
 
 fn build_menu_bar(
@@ -504,6 +567,10 @@ fn show_about_window(parent: &ApplicationWindow) {
     content.set_margin_start(24);
     content.set_margin_end(24);
 
+    let logo = app_logo(72);
+    logo.set_halign(gtk::Align::Center);
+    content.append(&logo);
+
     let title = Label::new(Some("Project Saturn"));
     title.add_css_class("about-title");
     content.append(&title);
@@ -522,6 +589,17 @@ fn show_about_window(parent: &ApplicationWindow) {
     content.append(&close);
     about.set_child(Some(&content));
     about.present();
+}
+
+fn app_logo(size: i32) -> gtk::Picture {
+    let bytes = gtk::glib::Bytes::from_static(include_bytes!("../assets/icons/saturn-camera.png"));
+    let texture = gtk::gdk::Texture::from_bytes(&bytes)
+        .expect("Bundled Saturn camera logo should be a valid image");
+    let picture = gtk::Picture::for_paintable(&texture);
+    picture.set_content_fit(gtk::ContentFit::Contain);
+    picture.set_size_request(size, size);
+    picture.set_can_shrink(true);
+    picture
 }
 
 #[derive(Clone)]
@@ -1157,7 +1235,10 @@ fn describe_media(
     }
 }
 
-fn build_editor_area(inspector: InspectorWidgets, source_monitor: SourceMonitor) -> GtkBox {
+fn build_editor_area(
+    inspector: InspectorWidgets,
+    source_monitor: SourceMonitor,
+) -> (GtkBox, gtk::Stack) {
     let area = GtkBox::new(Orientation::Vertical, 0);
     area.add_css_class("editor-area");
     area.set_margin_top(8);
@@ -1176,7 +1257,8 @@ fn build_editor_area(inspector: InspectorWidgets, source_monitor: SourceMonitor)
     upper.set_wide_handle(true);
     upper.set_position(820);
     upper.set_start_child(Some(&monitors));
-    upper.set_end_child(Some(&build_inspector_panel(inspector)));
+    let workspace_stack = build_workspace_stack(inspector);
+    upper.set_end_child(Some(&workspace_stack));
     upper.set_vexpand(true);
 
     let timeline = build_timeline_panel();
@@ -1184,7 +1266,237 @@ fn build_editor_area(inspector: InspectorWidgets, source_monitor: SourceMonitor)
 
     area.append(&upper);
     area.append(&timeline);
-    area
+    (area, workspace_stack)
+}
+
+fn build_workspace_stack(inspector: InspectorWidgets) -> gtk::Stack {
+    let stack = gtk::Stack::new();
+    stack.set_transition_type(gtk::StackTransitionType::Crossfade);
+    stack.set_transition_duration(140);
+    stack.set_width_request(248);
+    stack.set_hexpand(false);
+    stack.set_vexpand(true);
+    stack.add_named(&build_inspector_panel(inspector), Some("edit"));
+    stack.add_named(&build_color_workspace(), Some("color"));
+    stack.add_named(&build_audio_workspace(), Some("audio"));
+    stack.add_named(&build_keyframe_workspace(), Some("keyframes"));
+    stack.add_named(&build_export_workspace(), Some("export"));
+    stack.set_visible_child_name("edit");
+    stack
+}
+
+fn workspace_panel(title: &str, description: &str) -> GtkBox {
+    let panel = GtkBox::new(Orientation::Vertical, 10);
+    panel.add_css_class("inspector-panel");
+    let heading = GtkBox::new(Orientation::Vertical, 4);
+    heading.set_margin_start(10);
+    heading.set_margin_end(10);
+    heading.set_margin_top(10);
+    let title_label = Label::new(Some(title));
+    title_label.add_css_class("section-title");
+    title_label.set_xalign(0.0);
+    heading.append(&title_label);
+    let description_label = Label::new(Some(description));
+    description_label.add_css_class("muted-label");
+    description_label.set_xalign(0.0);
+    description_label.set_wrap(true);
+    heading.append(&description_label);
+    panel.append(&heading);
+    panel
+}
+
+fn workspace_section(title: &str) -> GtkBox {
+    let section = GtkBox::new(Orientation::Vertical, 8);
+    section.set_margin_start(10);
+    section.set_margin_end(10);
+    section.set_margin_top(4);
+    let label = Label::new(Some(title));
+    label.add_css_class("inspector-key");
+    label.set_xalign(0.0);
+    section.append(&label);
+    section
+}
+
+fn workspace_slider(label: &str, min: f64, max: f64, value: f64) -> GtkBox {
+    let row = GtkBox::new(Orientation::Vertical, 3);
+    let caption = Label::new(Some(label));
+    caption.add_css_class("inspector-value");
+    caption.set_xalign(0.0);
+    row.append(&caption);
+    let slider = gtk::Scale::with_range(Orientation::Horizontal, min, max, 1.0);
+    slider.set_value(value);
+    slider.set_draw_value(true);
+    slider.set_sensitive(false);
+    slider.set_tooltip_text(Some(
+        "Available when clip editing and rendering are implemented",
+    ));
+    row.append(&slider);
+    row
+}
+
+fn build_color_workspace() -> GtkBox {
+    let panel = workspace_panel(
+        "Color grading",
+        "Adjust the look of the selected timeline clip.",
+    );
+    let wheels = workspace_section("Primary wheels");
+    let row = GtkBox::new(Orientation::Horizontal, 4);
+    for (name, class) in [
+        ("Lift", "wheel-lift"),
+        ("Gamma", "wheel-gamma"),
+        ("Gain", "wheel-gain"),
+    ] {
+        let group = GtkBox::new(Orientation::Vertical, 3);
+        group.set_hexpand(true);
+        let wheel = Label::new(Some("◉"));
+        wheel.add_css_class("color-wheel");
+        wheel.add_css_class(class);
+        wheel.set_halign(gtk::Align::Center);
+        group.append(&wheel);
+        let caption = Label::new(Some(name));
+        caption.add_css_class("muted-label");
+        caption.set_halign(gtk::Align::Center);
+        group.append(&caption);
+        row.append(&group);
+    }
+    wheels.append(&row);
+    for (name, min, max, value) in [
+        ("Temperature", -100.0, 100.0, 0.0),
+        ("Tint", -100.0, 100.0, 0.0),
+        ("Exposure", -5.0, 5.0, 0.0),
+        ("Contrast", 0.0, 200.0, 100.0),
+        ("Saturation", 0.0, 200.0, 100.0),
+    ] {
+        wheels.append(&workspace_slider(name, min, max, value));
+    }
+    panel.append(&wheels);
+    let status = Label::new(Some("Color controls are planned; no grade is applied yet."));
+    status.add_css_class("muted-label");
+    status.set_wrap(true);
+    status.set_margin_start(10);
+    status.set_margin_end(10);
+    panel.append(&status);
+    panel
+}
+
+fn build_audio_workspace() -> GtkBox {
+    let panel = workspace_panel(
+        "Audio mixing",
+        "Balance sequence tracks and monitor levels.",
+    );
+    let mixer = workspace_section("Track mixer");
+    for (name, channel) in [
+        ("A1 · Dialogue", "L  R"),
+        ("A2 · Music", "L  R"),
+        ("A3 · Effects", "L  R"),
+        ("Master", "L  R"),
+    ] {
+        let strip = GtkBox::new(Orientation::Vertical, 4);
+        strip.add_css_class("mixer-strip");
+        let label = Label::new(Some(name));
+        label.add_css_class("inspector-value");
+        label.set_xalign(0.0);
+        strip.append(&label);
+        let meters = Label::new(Some("▏ ▎ ▍ ▌ ▋ ▊ ▉"));
+        meters.add_css_class("audio-meter");
+        meters.set_halign(gtk::Align::Center);
+        meters.set_tooltip_text(Some("Audio meters will respond when playback is available"));
+        strip.append(&meters);
+        let level = gtk::Scale::with_range(Orientation::Horizontal, -60.0, 12.0, 1.0);
+        level.set_value(0.0);
+        level.set_draw_value(false);
+        level.set_sensitive(false);
+        strip.append(&level);
+        let pan = Label::new(Some(channel));
+        pan.add_css_class("muted-label");
+        pan.set_halign(gtk::Align::Center);
+        strip.append(&pan);
+        mixer.append(&strip);
+    }
+    panel.append(&mixer);
+    let status = Label::new(Some(
+        "Mixer controls activate with timeline audio playback.",
+    ));
+    status.add_css_class("muted-label");
+    status.set_wrap(true);
+    status.set_margin_start(10);
+    status.set_margin_end(10);
+    panel.append(&status);
+    panel
+}
+
+fn build_keyframe_workspace() -> GtkBox {
+    let panel = workspace_panel("Keyframes", "Animate clip properties over time.");
+    let properties = workspace_section("Transform properties");
+    for property in ["Position", "Scale", "Rotation", "Opacity"] {
+        let row = GtkBox::new(Orientation::Horizontal, 8);
+        row.add_css_class("keyframe-row");
+        let name = Label::new(Some(property));
+        name.add_css_class("inspector-value");
+        name.set_xalign(0.0);
+        name.set_hexpand(true);
+        row.append(&name);
+        let value = Label::new(Some("—"));
+        value.add_css_class("muted-label");
+        row.append(&value);
+        let diamond = Button::with_label("◇");
+        diamond.set_sensitive(false);
+        diamond.set_tooltip_text(Some("Add keyframe when clip animation is available"));
+        row.append(&diamond);
+        properties.append(&row);
+    }
+    panel.append(&properties);
+    let status = Label::new(Some(
+        "Select a timeline clip to inspect its animation curves.",
+    ));
+    status.add_css_class("muted-label");
+    status.set_wrap(true);
+    status.set_margin_start(10);
+    status.set_margin_end(10);
+    panel.append(&status);
+    panel
+}
+
+fn build_export_workspace() -> GtkBox {
+    let panel = workspace_panel(
+        "Export",
+        "Choose a delivery format for the finished sequence.",
+    );
+    let settings = workspace_section("Output settings");
+    for (name, options) in [
+        ("Format", &["MP4 · H.264", "WebM · VP9"][..]),
+        ("Resolution", &["1920 × 1080", "1280 × 720"][..]),
+        ("Frame rate", &["30 fps", "24 fps", "25 fps"][..]),
+    ] {
+        let field = GtkBox::new(Orientation::Vertical, 4);
+        let label = Label::new(Some(name));
+        label.add_css_class("inspector-key");
+        label.set_xalign(0.0);
+        field.append(&label);
+        let dropdown = gtk::DropDown::from_strings(options);
+        dropdown.set_sensitive(false);
+        field.append(&dropdown);
+        settings.append(&field);
+    }
+    panel.append(&settings);
+    let export = Button::with_label("Render video");
+    export.add_css_class("accent-button");
+    export.set_sensitive(false);
+    export.set_tooltip_text(Some(
+        "Export will be enabled when the render pipeline is ready",
+    ));
+    export.set_margin_start(10);
+    export.set_margin_end(10);
+    panel.append(&export);
+    let status = Label::new(Some(
+        "The project model is ready; rendering is not implemented yet.",
+    ));
+    status.add_css_class("muted-label");
+    status.set_wrap(true);
+    status.set_margin_start(10);
+    status.set_margin_end(10);
+    panel.append(&status);
+    panel
 }
 
 fn build_source_panel(source: SourceMonitor) -> GtkBox {
@@ -1307,12 +1619,6 @@ fn build_inspector_panel(inspector: InspectorWidgets) -> GtkBox {
     panel.add_css_class("inspector-panel");
     panel.set_width_request(250);
     panel.set_margin_start(4);
-
-    panel.append(&panel_tabs(&[
-        ("Effect Controls", false),
-        ("Audio Mixer", false),
-        ("Metadata", true),
-    ]));
 
     let heading = Label::new(Some("Inspector"));
     heading.add_css_class("section-title");

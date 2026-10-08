@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Project Saturn
+Comment=Open-source Linux video editor
+Exec=project-saturn
+TryExec=project-saturn
+Icon=saturn-camera
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+StartupWMClass=com.zvirox.ProjectSaturn

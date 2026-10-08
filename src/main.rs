@@ -17,9 +17,12 @@ fn main() {
         let window = gtk::ApplicationWindow::builder()
             .application(app)
             .title("Project Saturn")
-            .default_width(1440)
-            .default_height(900)
+            .icon_name("saturn-camera")
+            .default_width(1280)
+            .default_height(800)
+            .resizable(true)
             .build();
+        window.set_size_request(900, 620);
 
         ui::build(&window);
         window.present();
